@@ -17,10 +17,10 @@ Vani TTS is an open-source, on-device Hindi Text-to-Speech model fine-tuned on t
 | Model | Hindi Quality | On-Device | Mobile Ready | Open Source |
 |---|---|---|---|---|
 | Google TTS | ✅ Good | ❌ Cloud only | ❌ | ❌ |
-| Veena (Maya Research) | ✅ Excellent | ❌ No CPU support | ❌ | ❌ |
-| AI4Bharat Indic-TTS | ✅ Good | ⚠️ Heavy | ❌ | ✅ |
+| Veena (Maya Research) | ✅ Excellent | ❌ Needs GPU | ❌ | ❌ |
+| AI4Bharat Indic Parler-TTS | ✅ Very Good | ❌ 0.9B params | ❌ | ✅ |
 | Piper TTS (hi) | ⚠️ Poor | ✅ | ✅ | ✅ |
-| **Vani TTS** | ✅ **Good** | ✅ **Yes** | ✅ **Yes** | ✅ **Yes** |
+| **Vani TTS** | ✅ **Good→Great** | ✅ **Yes** | ✅ **Yes** | ✅ **Yes** |
 
 **Vani fills the gap: quality Hindi TTS that runs on your phone, offline, for free.**
 
@@ -42,9 +42,9 @@ Vani TTS is an open-source, on-device Hindi Text-to-Speech model fine-tuned on t
 ```
 vani-tts/
 ├── data/
-│   └── phase1_dataset.py       # Dataset exploration & preprocessing
+│   └── prepare_data.py         # Dataset streaming & preprocessing
 ├── training/
-│   └── finetune_piper.py       # Piper TTS fine-tuning
+│   └── finetune_kokoro.py      # Kokoro TTS fine-tuning
 ├── evaluation/
 │   └── evaluate.py             # MOS, WER evaluation
 ├── export/
@@ -71,12 +71,22 @@ cd vani-tts
 pip install -r requirements.txt
 
 # Step 1: Prepare dataset
-python data/phase1_dataset.py
+python data/prepare_data.py
 
-# Step 2: Fine-tune
-python training/finetune_piper.py
+# Step 2: Verify baseline Kokoro Hindi voice
+python -c "
+from kokoro import KPipeline
+import soundfile as sf
+pipe = KPipeline(lang_code='h')
+audio, sr = pipe('नमस्ते, मेरा नाम वाणी है।')
+sf.write('baseline.wav', audio, sr)
+print('Baseline saved to baseline.wav')
+"
 
-# Step 3: Export to ONNX
+# Step 3: Fine-tune
+python training/finetune_kokoro.py
+
+# Step 4: Export to ONNX
 python export/export_onnx.py
 ```
 
@@ -88,37 +98,41 @@ python export/export_onnx.py
 |---|---|
 | Source | [ai4bharat/indicvoices_r](https://huggingface.co/datasets/ai4bharat/indicvoices_r) |
 | Language | Hindi (hi) |
-| Sample Rate | 22050 Hz |
-| Training Samples | 5,000–20,000 |
-| Duration Filter | 0.5s – 10.0s |
+| Sample Rate | 24000 Hz |
+| Training Samples | 15,000 |
+| Duration Filter | 1.0s – 12.0s |
 | Normalization | -20 dB RMS |
+| Download Method | Streaming (no full download needed) |
 
 ---
 
 ## 🏗️ Architecture
 
-Vani TTS is based on **[Piper TTS](https://github.com/rhasspy/piper)** which uses the **VITS** (Variational Inference with adversarial learning for end-to-end Text-to-Speech) architecture:
+Vani TTS is fine-tuned on **[Kokoro TTS](https://huggingface.co/hexgrad/Kokoro-82M)** — an 82M parameter model based on the **StyleTTS2** architecture with an iSTFT decoder:
 
 ```
-Text → Phonemizer → VITS Encoder → Flow → HiFi-GAN Vocoder → Audio
+Text → Misaki G2P (Hindi phonemes) → Style Encoder → Decoder → iSTFT → Audio
 ```
 
-- **Why VITS?** Single-stage end-to-end training, faster than two-stage systems
-- **Why Piper?** Designed for on-device CPU inference, ONNX export built-in
-- **Why not Whisper/LLM-based TTS?** Too large for mobile (1B+ parameters)
+- **Why Kokoro over Piper?** Kokoro uses a modern StyleTTS2 architecture vs Piper's 2021-era VITS — significantly better quality ceiling, especially for prosody and naturalness
+- **Why not Piper?** Piper uses espeak-ng for Hindi phonemization, which produces incorrect stress patterns and mechanical pauses on Devanagari text. The Hindi model was added late (August 2025) and the repo was archived shortly after — no active development
+- **Why not larger models (Parler-TTS, Veena)?** At 0.9B–3B parameters, they require GPU inference and cannot run on mobile CPUs in real-time
+- **Misaki G2P** — Kokoro's phonemizer has native Hindi support, handling Devanagari script correctly without transliteration
 
 ---
 
 ## 📅 Roadmap
 
-- [x] Phase 1 — Dataset exploration & preprocessing
-- [ ] Phase 2 — Piper TTS fine-tuning on Hindi
-- [ ] Phase 3 — Evaluation (MOS score, naturalness)
-- [ ] Phase 4 — ONNX export & optimization
-- [ ] Phase 5 — Android integration (ONNX Runtime)
-- [ ] Phase 6 — iOS integration (CoreML)
-- [ ] Phase 7 — Multiple Hindi voices (male/female)
-- [ ] Phase 8 — Hinglish support (code-switching)
+- [x] Phase 0 — Architecture research & decision (Kokoro > Piper)
+- [x] Phase 1 — Dataset pipeline (IndicVoices-R, streaming, 24kHz)
+- [ ] Phase 2 — Kokoro baseline evaluation on Hindi
+- [ ] Phase 3 — Fine-tuning on 15k IndicVoices-R samples
+- [ ] Phase 4 — Evaluation (MOS score, WER, RTF)
+- [ ] Phase 5 — ONNX export & INT8 quantization
+- [ ] Phase 6 — Android integration (ONNX Runtime)
+- [ ] Phase 7 — iOS integration (CoreML)
+- [ ] Phase 8 — Multiple Hindi voices (male/female)
+- [ ] Phase 9 — Hinglish support (code-switching)
 
 ---
 
@@ -126,18 +140,20 @@ Text → Phonemizer → VITS Encoder → Flow → HiFi-GAN Vocoder → Audio
 
 | Metric | Target | Current |
 |---|---|---|
-| MOS Score | > 3.5 / 5.0 | WIP |
-| Real-Time Factor (CPU) | < 1.0 | WIP |
+| MOS Score | > 3.8 / 5.0 | WIP |
+| Word Error Rate (WER) | < 8% | WIP |
+| Real-Time Factor (CPU) | < 0.3x | WIP |
 | Model Size | < 200 MB | WIP |
-| Android Latency | < 500ms | WIP |
+| Android Latency | < 300ms/sec audio | WIP |
 
 ---
 
 ## 🙏 Acknowledgements
 
 - [AI4Bharat](https://ai4bharat.iitm.ac.in/) for the IndicVoices-R dataset
-- [Piper TTS](https://github.com/rhasspy/piper) by rhasspy for the base architecture
-- [VITS Paper](https://arxiv.org/abs/2106.06103) — Kim et al., 2021
+- [Kokoro TTS](https://huggingface.co/hexgrad/Kokoro-82M) by hexgrad for the base model
+- [StyleTTS2](https://arxiv.org/abs/2306.07691) — Li et al., 2023
+- [Misaki G2P](https://github.com/hexgrad/misaki) for Hindi phonemization
 
 ---
 
