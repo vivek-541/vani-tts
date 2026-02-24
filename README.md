@@ -64,7 +64,7 @@ vani-tts/
 
 ```bash
 # Clone the repo
-git clone https://github.com/YOUR_USERNAME/vani-tts.git
+git clone https://github.com/vivek-541/vani-tts.git
 cd vani-tts
 
 # Install dependencies
