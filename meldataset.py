@@ -147,10 +147,22 @@ class FilePathDataset(torch.utils.data.Dataset):
             
         wave = np.concatenate([np.zeros([5000]), wave, np.zeros([5000])], axis=0)
         
+        # text = self.text_cleaner(text)
+        
+        # text.insert(0, 0)
+        # text.append(0)
+        
+        # text = torch.LongTensor(text)
+
+        # return wave, text, speaker_id
         text = self.text_cleaner(text)
         
         text.insert(0, 0)
         text.append(0)
+        
+        # Skip samples where text is too short (only padding tokens remain)
+        if len(text) < 4:
+            text = [0, dicts.get('a', 1), 0]  # fallback minimal text
         
         text = torch.LongTensor(text)
 
@@ -186,6 +198,11 @@ class Collater(object):
         batch_size = len(batch)
 
         # sort by mel length
+        batch = [b for b in batch if b[2].shape[0] >= 4]
+        if len(batch) == 0:
+            # Return dummy batch that train loop will skip
+            return None
+        batch_size = len(batch)
         lengths = [b[1].shape[1] for b in batch]
         batch_indexes = np.argsort(lengths)[::-1]
         batch = [batch[bid] for bid in batch_indexes]
