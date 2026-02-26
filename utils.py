@@ -11,6 +11,21 @@ import librosa
 import matplotlib.pyplot as plt
 from munch import Munch
 
+# def maximum_path(neg_cent, mask):
+#   """ Cython optimized version.
+#   neg_cent: [b, t_t, t_s]
+#   mask: [b, t_t, t_s]
+#   """
+#   device = neg_cent.device
+#   dtype = neg_cent.dtype
+#   neg_cent =  np.ascontiguousarray(neg_cent.data.cpu().numpy().astype(np.float32))
+#   path =  np.ascontiguousarray(np.zeros(neg_cent.shape, dtype=np.int32))
+
+#   _mask_sum = mask.sum(1)
+#   t_t_max = np.ascontiguousarray((_mask_sum[:, 0] if _mask_sum.dim() > 1 else _mask_sum).data.cpu().numpy().astype(np.int32))
+#   t_s_max = np.ascontiguousarray(mask.sum(2)[:, 0].data.cpu().numpy().astype(np.int32))
+#   maximum_path_c(path, neg_cent, t_t_max, t_s_max)
+#   return torch.from_numpy(path).to(device=device, dtype=dtype)
 def maximum_path(neg_cent, mask):
   """ Cython optimized version.
   neg_cent: [b, t_t, t_s]
@@ -20,9 +35,10 @@ def maximum_path(neg_cent, mask):
   dtype = neg_cent.dtype
   neg_cent =  np.ascontiguousarray(neg_cent.data.cpu().numpy().astype(np.float32))
   path =  np.ascontiguousarray(np.zeros(neg_cent.shape, dtype=np.int32))
-
-  t_t_max = np.ascontiguousarray(mask.sum(1)[:, 0].data.cpu().numpy().astype(np.int32))
-  t_s_max = np.ascontiguousarray(mask.sum(2)[:, 0].data.cpu().numpy().astype(np.int32))
+  _mask_sum = mask.sum(1)
+  t_t_max = np.ascontiguousarray((_mask_sum[:, 0] if _mask_sum.dim() > 1 else _mask_sum).data.cpu().numpy().astype(np.int32))
+  _mask_sum2 = mask.sum(2) if mask.dim() > 2 else mask.sum(1)
+  t_s_max = np.ascontiguousarray((_mask_sum2[:, 0] if _mask_sum2.dim() > 1 else _mask_sum2).data.cpu().numpy().astype(np.int32))
   maximum_path_c(path, neg_cent, t_t_max, t_s_max)
   return torch.from_numpy(path).to(device=device, dtype=dtype)
 
