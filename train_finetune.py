@@ -29,7 +29,9 @@ from Modules.slmadv import SLMAdversarialLoss
 from Modules.diffusion.sampler import DiffusionSampler, ADPM2Sampler, KarrasSchedule
 
 from optimizers import build_optimizer
-
+scaler = torch.cuda.amp.GradScaler()
+torch.backends.cudnn.benchmark = False
+torch.cuda.empty_cache()
 # simple fix for dataparallel that allows access to class attributes
 class MyDataParallel(torch.nn.DataParallel):
     def __getattr__(self, name):
@@ -95,7 +97,7 @@ def main(config_path):
                                         OOD_data=OOD_data,
                                         min_length=min_length,
                                         batch_size=batch_size,
-                                        num_workers=2,
+                                        num_workers=0,
                                         dataset_config={},
                                         device=device)
 
@@ -255,7 +257,11 @@ def main(config_path):
         model.msd.train()
         model.mpd.train()
 
+        # for i, batch in enumerate(train_dataloader):
         for i, batch in enumerate(train_dataloader):
+            if batch is None:
+                continue
+            waves = batch[0]
             waves = batch[0]
             batch = [b.to(device) for b in batch[1:]]
             texts, input_lengths, ref_texts, ref_lengths, mels, mel_input_length, ref_mels = batch
@@ -270,16 +276,40 @@ def main(config_path):
                     ref_sp = model.predictor_encoder(ref_mels.unsqueeze(1))
                     ref = torch.cat([ref_ss, ref_sp], dim=1)
                 
+            # try:
+            #     ppgs, s2s_pred, s2s_attn = model.text_aligner(mels, mask, texts)
+            #     s2s_attn = s2s_attn.transpose(-1, -2)
+            #     s2s_attn = s2s_attn[..., 1:]
+            #     s2s_attn = s2s_attn.transpose(-1, -2)
+            # except:
+            #     continue
+
+            # mask_ST = mask_from_lens(s2s_attn, input_lengths, mel_input_length // (2 ** n_down))
+            # s2s_attn_mono = maximum_path(s2s_attn, mask_ST)
+            # try:
+            #     ppgs, s2s_pred, s2s_attn = model.text_aligner(mels, mask, texts)
+            #     s2s_attn = s2s_attn.transpose(-1, -2)
+            #     s2s_attn = s2s_attn[..., 1:]
+            #     s2s_attn = s2s_attn.transpose(-1, -2)
+            #     if s2s_attn.shape[-1] == 0 or s2s_attn.shape[-2] == 0:
+            #         continue
+            #     mask_ST = mask_from_lens(s2s_attn, input_lengths, mel_input_length // (2 ** n_down))
+            #     s2s_attn_mono = maximum_path(s2s_attn, mask_ST)
+            # except:
+            #     continue
             try:
                 ppgs, s2s_pred, s2s_attn = model.text_aligner(mels, mask, texts)
                 s2s_attn = s2s_attn.transpose(-1, -2)
                 s2s_attn = s2s_attn[..., 1:]
                 s2s_attn = s2s_attn.transpose(-1, -2)
-            except:
+                if s2s_attn.shape[-1] == 0 or s2s_attn.shape[-2] == 0:
+                    print(f"Skipping batch {i}: zero-length attention {s2s_attn.shape}")
+                    continue
+                mask_ST = mask_from_lens(s2s_attn, input_lengths, mel_input_length // (2 ** n_down))
+                s2s_attn_mono = maximum_path(s2s_attn, mask_ST)
+            except Exception as e:
+                print(f"Skipping batch {i}: {type(e).__name__}: {e}")
                 continue
-
-            mask_ST = mask_from_lens(s2s_attn, input_lengths, mel_input_length // (2 ** n_down))
-            s2s_attn_mono = maximum_path(s2s_attn, mask_ST)
 
             # encode
             t_en = model.text_encoder(texts, input_lengths, text_mask)
@@ -304,8 +334,10 @@ def main(config_path):
                 s = model.style_encoder(mel.unsqueeze(0).unsqueeze(1))
                 gs.append(s)
 
-            s_dur = torch.stack(ss).squeeze()  # global prosodic styles
-            gs = torch.stack(gs).squeeze() # global acoustic styles
+            # s_dur = torch.stack(ss).squeeze()  # global prosodic styles
+            # gs = torch.stack(gs).squeeze() # global acoustic styles
+            s_dur = torch.stack(ss).squeeze(1)  # global prosodic styles
+            gs = torch.stack(gs).squeeze(1) # global acoustic styles
             s_trg = torch.cat([gs, s_dur], dim=-1).detach() # ground truth for denoiser
 
             bert_dur = model.bert(texts, attention_mask=(~text_mask).int())
@@ -392,20 +424,28 @@ def main(config_path):
 
                 N_real = log_norm(gt.unsqueeze(1)).squeeze(1)
                 
+                # y_rec_gt = wav.unsqueeze(1)
+                # y_rec_gt_pred = model.decoder(en, F0_real, N_real, s)
+
+                # wav = y_rec_gt
                 y_rec_gt = wav.unsqueeze(1)
-                y_rec_gt_pred = model.decoder(en, F0_real, N_real, s)
-
+                with torch.cuda.amp.autocast():
+                    y_rec_gt_pred = model.decoder(en, F0_real, N_real, s)
                 wav = y_rec_gt
-
             F0_fake, N_fake = model.predictor.F0Ntrain(p_en, s_dur)
 
-            y_rec = model.decoder(en, F0_fake, N_fake, s)
+            # y_rec = model.decoder(en, F0_fake, N_fake, s)
+            with torch.cuda.amp.autocast():
+                y_rec = model.decoder(en, F0_fake, N_fake, s)
 
             loss_F0_rec =  (F.smooth_l1_loss(F0_real, F0_fake)) / 10
             loss_norm_rec = F.smooth_l1_loss(N_real, N_fake)
 
             optimizer.zero_grad()
-            d_loss = dl(wav.detach(), y_rec.detach()).mean()
+            # d_loss = dl(wav.detach(), y_rec.detach()).mean()
+            # with torch.cuda.amp.autocast():
+            #     d_loss = dl(wav.detach(), y_rec.detach()).mean()
+            d_loss = dl(wav.detach().float(), y_rec.detach().float()).mean()
             d_loss.backward()
             optimizer.step('msd')
             optimizer.step('mpd')
@@ -413,10 +453,21 @@ def main(config_path):
             # generator loss
             optimizer.zero_grad()
 
-            loss_mel = stft_loss(y_rec, wav)
-            loss_gen_all = gl(wav, y_rec).mean()
-            loss_lm = wl(wav.detach().squeeze(), y_rec.squeeze()).mean()
+            # loss_mel = stft_loss(y_rec, wav)
+            # loss_gen_all = gl(wav, y_rec).mean()
+            # loss_lm = wl(wav.detach().squeeze(), y_rec.squeeze()).mean()
+            # with torch.cuda.amp.autocast():
+            #     loss_mel = stft_loss(y_rec, wav)
+            #     loss_gen_all = gl(wav, y_rec).mean()
+            #     loss_lm = wl(wav.detach().squeeze(), y_rec.squeeze()).mean()
 
+            with torch.cuda.amp.autocast():
+                loss_mel = stft_loss(y_rec, wav)
+                loss_gen_all = gl(wav, y_rec).mean()
+                if loss_params.lambda_slm > 0:
+                    loss_lm = wl(wav.detach().squeeze(), y_rec.squeeze()).mean()
+                else:
+                    loss_lm = torch.zeros(1).to(device)
             loss_ce = 0
             loss_dur = 0
             for _s2s_pred, _text_input, _text_length in zip(d, (d_gt), input_lengths):
@@ -453,11 +504,19 @@ def main(config_path):
                     loss_params.lambda_mono * loss_mono + \
                     loss_params.lambda_s2s * loss_s2s
             
+            # running_loss += loss_mel.item()
+            # g_loss.backward()
             running_loss += loss_mel.item()
+            if torch.isnan(g_loss) or torch.isinf(g_loss):
+                print(f"NaN/Inf loss at epoch {epoch+1} step {i+1}, skipping", flush=True)
+                optimizer.zero_grad()
+                continue
             g_loss.backward()
-            if torch.isnan(g_loss):
-                from IPython.core.debugger import set_trace
-                set_trace()
+            # if torch.isnan(g_loss):
+            #     print(f"NaN loss detected at epoch {epoch+1}, step {i+1}")
+            #     continue
+                # from IPython.core.debugger import set_trace
+                # set_trace()
 
             optimizer.step('bert_encoder')
             optimizer.step('bert')
@@ -569,7 +628,13 @@ def main(config_path):
 
         with torch.no_grad():
             iters_test = 0
+            # for batch_idx, batch in enumerate(val_dataloader):
+            #     optimizer.zero_grad()
             for batch_idx, batch in enumerate(val_dataloader):
+                if batch is None:
+                    continue
+                if batch_idx >= 50:  # limit validation to 50 batches
+                    break
                 optimizer.zero_grad()
 
                 try:
@@ -581,10 +646,16 @@ def main(config_path):
                         text_mask = length_to_mask(input_lengths).to(texts.device)
 
                         _, _, s2s_attn = model.text_aligner(mels, mask, texts)
+                        # s2s_attn = s2s_attn.transpose(-1, -2)
+                        # s2s_attn = s2s_attn[..., 1:]
+                        # s2s_attn = s2s_attn.transpose(-1, -2)
+
+                        # mask_ST = mask_from_lens(s2s_attn, input_lengths, mel_input_length // (2 ** n_down))
                         s2s_attn = s2s_attn.transpose(-1, -2)
                         s2s_attn = s2s_attn[..., 1:]
                         s2s_attn = s2s_attn.transpose(-1, -2)
-
+                        if s2s_attn.shape[-1] == 0 or s2s_attn.shape[-2] == 0:
+                            continue
                         mask_ST = mask_from_lens(s2s_attn, input_lengths, mel_input_length // (2 ** n_down))
                         s2s_attn_mono = maximum_path(s2s_attn, mask_ST)
 
@@ -605,8 +676,10 @@ def main(config_path):
                         s = model.style_encoder(mel.unsqueeze(0).unsqueeze(1))
                         gs.append(s)
 
-                    s = torch.stack(ss).squeeze()
-                    gs = torch.stack(gs).squeeze()
+                    # s = torch.stack(ss).squeeze()
+                    # gs = torch.stack(gs).squeeze()
+                    s = torch.stack(ss).squeeze(1)
+                    gs = torch.stack(gs).squeeze(1)
                     s_trg = torch.cat([s, gs], dim=-1).detach()
 
                     bert_dur = model.bert(texts, attention_mask=(~text_mask).int())
@@ -658,7 +731,9 @@ def main(config_path):
 
                     s = model.style_encoder(gt.unsqueeze(1))
 
-                    y_rec = model.decoder(en, F0_fake, N_fake, s)
+                    # y_rec = model.decoder(en, F0_fake, N_fake, s)
+                    with torch.cuda.amp.autocast():
+                        y_rec = model.decoder(en, F0_fake, N_fake, s)
                     loss_mel = stft_loss(y_rec.squeeze(), wav.detach())
 
                     F0_real, _, F0 = model.pitch_extractor(gt.unsqueeze(1)) 
@@ -670,26 +745,40 @@ def main(config_path):
                     loss_f += (loss_F0).mean()
 
                     iters_test += 1
-                except:
+                # except:
+                #     continue
+                except Exception as e:
+                    print(f"Skipping validation batch {batch_idx}: {type(e).__name__}: {e}")
                     continue
 
         print('Epochs:', epoch + 1)
-        logger.info('Validation loss: %.3f, Dur loss: %.3f, F0 loss: %.3f' % (loss_test / iters_test, loss_align / iters_test, loss_f / iters_test) + '\n\n\n')
+        # logger.info('Validation loss: %.3f, Dur loss: %.3f, F0 loss: %.3f' % (loss_test / iters_test, loss_align / iters_test, loss_f / iters_test) + '\n\n\n')
+        if iters_test > 0:
+            logger.info('Validation loss: %.3f, Dur loss: %.3f, F0 loss: %.3f' % (loss_test / iters_test, loss_align / iters_test, loss_f / iters_test) + '\n\n\n')
+            writer.add_scalar('eval/mel_loss', loss_test / iters_test, epoch + 1)
+            writer.add_scalar('eval/dur_loss', loss_test / iters_test, epoch + 1)
+            writer.add_scalar('eval/F0_loss', loss_f / iters_test, epoch + 1)
+        else:
+            logger.info('Validation skipped — all batches failed\n\n\n')
         print('\n\n\n')
-        writer.add_scalar('eval/mel_loss', loss_test / iters_test, epoch + 1)
-        writer.add_scalar('eval/dur_loss', loss_test / iters_test, epoch + 1)
-        writer.add_scalar('eval/F0_loss', loss_f / iters_test, epoch + 1)
+        # writer.add_scalar('eval/mel_loss', loss_test / iters_test, epoch + 1)
+        # writer.add_scalar('eval/dur_loss', loss_test / iters_test, epoch + 1)
+        # writer.add_scalar('eval/F0_loss', loss_f / iters_test, epoch + 1)
         
         
+        # if (epoch + 1) % save_freq == 0 :
+        #     if (loss_test / iters_test) < best_loss:
+        #         best_loss = loss_test / iters_test
         if (epoch + 1) % save_freq == 0 :
-            if (loss_test / iters_test) < best_loss:
+            if iters_test > 0 and (loss_test / iters_test) < best_loss:
                 best_loss = loss_test / iters_test
             print('Saving..')
             state = {
                 'net':  {key: model[key].state_dict() for key in model}, 
                 'optimizer': optimizer.state_dict(),
                 'iters': iters,
-                'val_loss': loss_test / iters_test,
+                # 'val_loss': loss_test / iters_test,
+                'val_loss': loss_test / iters_test if iters_test > 0 else 0,
                 'epoch': epoch,
             }
             save_path = osp.join(log_dir, 'epoch_2nd_%05d.pth' % epoch)
