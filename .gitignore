@@ -209,3 +209,10 @@ __marimo__/
 *.t7
 Data/train_list.txt
 Data/val_list.txt
+*.pth
+*.t7
+Data/OOD_texts.txt
+Models/
+Utils/ASR/epoch_00080.pth
+Utils/PLBERT/
+Utils/JDC/
