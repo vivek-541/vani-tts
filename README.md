@@ -103,9 +103,8 @@ Devanagari Text → espeak-ng (IPA phonemes) → PLBERT → Style Encoder → Hi
 | Source | [ai4bharat/indicvoices_r](https://huggingface.co/datasets/ai4bharat/indicvoices_r) |
 | Language | Hindi (hi) |
 | Sample Rate | 24,000 Hz |
-| Training Samples | 14,250 |
-| Validation Samples | 750 |
-| Total Samples | 15,000 |
+| Training Samples | 5,000 (curated from 14,250) |
+| Validation Samples | 250 |
 | Duration Filter | 1.0s – 12.0s |
 | Normalization | −20 dB RMS |
 | Phoneme Tokens | 49 unique IPA tokens |
@@ -119,12 +118,14 @@ Devanagari Text → espeak-ng (IPA phonemes) → PLBERT → Style Encoder → Hi
 |---|---|
 | Base checkpoint | LibriTTS `epochs_2nd_00020.pth` (736MB) |
 | Epochs | 50 |
-| Batch size | 1–4 (GPU memory dependent) |
+| Batch size | 2 |
+| Max sequence length | 160 frames |
 | Sample rate | 24,000 Hz |
 | Decoder | HiFiGAN |
 | Mixed precision | AMP fp16 |
-| Hardware used | NVIDIA RTX 3060 12GB |
-| Estimated training time | 48–72 hours |
+| Hardware | NVIDIA RTX 3060 12GB + Intel i3-8100 |
+| Estimated training time | ~46 hours |
+| Step time | ~1.3s/step |
 
 ---
 
@@ -134,8 +135,8 @@ Devanagari Text → espeak-ng (IPA phonemes) → PLBERT → Style Encoder → Hi
 - [x] Phase 1 — Dataset pipeline (15k IndicVoices-R samples, 24kHz, −20dB RMS)
 - [x] Phase 2 — Phonemization (espeak-ng IPA, 49 tokens, 14,250 train / 750 val)
 - [x] Phase 3 — Pretrained weights + StyleTTS2 config (LibriTTS base, HiFiGAN decoder)
-- [x] Phase 4 — Training loop stabilized (bug fixes: monotonic_align, mask_from_lens, AMP)
-- [ ] **Phase 5 — 50 epochs training** ← 🔄 IN PROGRESS
+- [x] Phase 4 — Training loop stabilized (10 bugs fixed — see Engineering Decisions below)
+- [ ] **Phase 5 — 50 epochs training** ← 🔄 IN PROGRESS (Est. completion: ~46h from Mar 1)
 - [ ] Phase 6 — Evaluation (MOS score, WER via Whisper, RTF on CPU)
 - [ ] Phase 7 — ONNX export (opset 17) + INT8 dynamic quantization
 - [ ] Phase 8 — Android integration (ONNX Runtime)
@@ -158,16 +159,37 @@ Devanagari Text → espeak-ng (IPA phonemes) → PLBERT → Style Encoder → Hi
 
 ---
 
-## 🛠️ Notable Engineering Decisions
+## 🛠️ Engineering Decisions & Bug Chronicle
 
-| Problem | Solution |
-|---|---|
-| `torchcodec` missing in new datasets | `Audio(decode=False)` + manual soundfile decode |
-| `misaki` has no Hindi module | `phonemizer` with `backend='espeak', language='hi'` |
-| `monotonic_align` needs Cython compile | Pure Python fallback implementation |
-| PyTorch 2.6 `weights_only` default changed | Added `weights_only=False` to all `torch.load` calls |
-| LibriTTS checkpoint uses HiFiGAN not iSTFT | Set `decoder.type: hifigan` in config |
-| RTX 3060 12GB VRAM with full StyleTTS2 | AMP fp16 + `batch_size=1` + `max_len=150` |
+Getting StyleTTS2 to train on Hindi required solving 12 distinct bugs. Documented here for anyone attempting similar cross-lingual fine-tuning.
+
+### Environment & Dependencies
+
+| # | Problem | Root Cause | Fix |
+|---|---|---|---|
+| 1 | `torchcodec` import error on dataset load | HuggingFace `datasets` switched default audio backend to torchcodec in new versions | `Audio(decode=False)` + manual soundfile decode |
+| 2 | `misaki` has no Hindi module | `misaki` phonemizer only supports: en, ja, ko, zh, he, vi, espeak-wrappers — not Hindi directly | Used `phonemizer` library with `backend='espeak', language='hi'` |
+| 3 | `monotonic_align` Cython compile fails | StyleTTS2 ships monotonic_align as a Cython extension requiring compilation | Pure Python fallback implementation at `monotonic_align/core.py` |
+| 4 | `torch.load` raises `weights_only` error | PyTorch 2.6 changed `weights_only` default from `False` to `True` | Added `weights_only=False` to all `torch.load` calls in `models.py` |
+| 5 | Decoder architecture mismatch at checkpoint load | LibriTTS pretrained checkpoint uses HiFiGAN decoder; config defaulted to iSTFT | Set `decoder.type: hifigan` in `config_ft.yml`; removed iSTFT-specific params |
+
+### Training Loop Bugs
+
+| # | Problem | Root Cause | Fix |
+|---|---|---|---|
+| 6 | `mask_from_lens` signature mismatch | Our pure-Python implementation only accepted 2 args; StyleTTS2 calls it with 3 | Updated `monotonic_align/__init__.py` to handle 3-arg call with tensor step |
+| 7 | `maximum_path` IndexError on `mask.sum(1)[:, 0]` | Fails when `mask.sum(1)` is 1D with a single element | Guarded with `_mask_sum[:, 0] if _mask_sum.dim() > 1 else _mask_sum` in `utils.py` |
+| 8 | **Every batch silently skipped — model never trained** | Attention matrix slice `s2s_attn[..., 1:]` (BOS token removal) was accidentally deleted during debugging. Double no-op transpose replaced it. Without the slice, `s2s_attn` has text-dim N but `t_en` has dim N-1 → matmul shape mismatch on every batch → caught by except → skipped | Restored the 3-line canonical attention transform: `transpose → [..1:] → transpose` |
+| 9 | **`skipped_batches` NameError crash** | Variable used before assignment — `skipped_batches += 1` inside the alignment try-block but `skipped_batches = 0` was never initialized before the batch loop | Added `skipped_batches = 0` at the top of each epoch loop |
+| 10 | **`gt.size(-1) < 80` skipped every batch silently** | `max_len=70` → `mel_len = max_len//2 = 35` → `gt frames = 35×2 = 70` → `70 < 80` → skip. The guard threshold was larger than the maximum possible clip size, so 100% of batches were discarded after passing alignment | Raised `max_len` to `160` (giving `gt=160 frames`) and lowered guard to `< 40` |
+| 11 | **Cascade OOM** — hundreds of consecutive batches fail after first OOM | PyTorch CUDA allocator fragments on OOM; `empty_cache()` in the except block doesn't defragment | `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` + proactive `empty_cache()` every 50 batches |
+| 12 | **stdout buffering** — no output when piped through `tee` | Python buffers stdout when not writing to a TTY | `PYTHONUNBUFFERED=1` env var + `flush=True` on all `print()` calls |
+
+### The Most Painful Bug (Bug #10)
+
+Bug #10 wasted ~8 hours of compute. The training appeared to run — epochs completed, checkpoints saved, validation losses printed — but the model weights never changed. The tell was `Dur loss: 1.746` being **identical** across all 14 epochs. A frozen loss means frozen weights. The batch loop was executing in seconds (only validation was running). The root cause: a minimum frame-length guard `if gt.size(-1) < 80: continue` was set larger than the maximum achievable clip size given the `max_len` config parameter, silently discarding every training batch while validation (which doesn't have this guard) ran fine.
+
+**Lesson:** Always log `skipped_batches` per epoch. If it equals total batches, nothing trained.
 
 ---
 
