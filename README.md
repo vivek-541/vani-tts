@@ -145,7 +145,7 @@ Once the vocoder reaches ~50k steps it will be integrated into `infer.py`, repla
 
 ## 🛠️ Engineering — Bug Chronicle
 
-Getting StyleTTS2 to train on Hindi required solving **23 bugs** across environment, data, training loop, numerical stability, inference, and vocoder compatibility.
+Getting StyleTTS2 to train on Hindi required solving **33 bugs** across environment, data, training loop, numerical stability, GAN convergence, inference, and vocoder compatibility.
 
 ### Environment & Dependencies (5 bugs)
 
@@ -192,13 +192,40 @@ Getting StyleTTS2 to train on Hindi required solving **23 bugs** across environm
 | 19 | Duration explosion (22-second output) | `clamp(min=1, max=10) * 2.0` + hard frame cap |
 | 20 | Buzzy audio | Use `s_acoustic` from diffusion output, not `ref_s` from reference wav |
 
+### Round 2 GAN Stabilization (7 bugs)
+
+| # | Problem | Root Cause | Fix |
+|---|---|---|---|
+| 21 | OOM cascade at batch ~4000 | Cache clear every 50 batches not frequent enough + no explicit tensor deletion | `del` large activation tensors every batch + `empty_cache()` every 20 steps |
+| 22 | Validation OOM — all 50 batches failed | No cache clear before val loop, training tensors still allocated | `empty_cache()` before each val batch + reduced val to 10 batches |
+| 23 | **Broken gradient accumulation** — disc never actually updated | `optimizer.zero_grad()` called between disc backward and gen backward, wiping disc gradients before gen ran. `scaler.update()` also called twice per step | Zero_grad only at epoch start and after full accumulation window. `scaler.update()` called exactly once after all optimizers step |
+| 24 | `d_loss` NaN cascade — 29 consecutive NaNs | `dl()` called inside `torch.cuda.amp.autocast()` — spectral-normed disc convolutions overflow fp16 | Remove autocast from `dl()`, run discriminator in fp32 with `.float()` cast |
+| 25 | `g_loss` NaN cascade after fix #24 | `gl()` still inside autocast — same fp16 overflow in MPD/MSD | Remove autocast from `gl()`, run in fp32: `gl(wav.float(), y_rec.float())` |
+| 26 | `RuntimeError: Input type (Half) and bias type (float) should be the same` | `y_rec` exits autocast decoder as fp16, but `gl()` now expects fp32 | Add `.float()` cast on both args: `gl(wav.float(), y_rec.float())` |
+| 27 | Discriminator frozen at 4.44 — gradient contamination | `gl()` calls MPD/MSD internally; `g_loss.backward()` was updating disc weights in direction opposite to `d_loss.backward()`, causing them to cancel | Freeze disc with `requires_grad_(False)` before gen backward, unfreeze after |
+| 28 | `RuntimeError: element 0 of tensors does not require grad` | NaN skip via `continue` bypassed the unfreeze lines, leaving disc frozen into next batch | Add safety unfreeze at start of every batch before `d_loss` computation |
+| 29 | `accum_count` not reset on OOM/NaN skip | Partial gradients from failed batches accumulated into next window | Reset `accum_count = 0` on every `continue` path (OOM, NaN d_loss, NaN g_loss, alignment error) |
+| 30 | GAN lazy equilibrium — Disc stuck at 3.93–4.01 for 6+ epochs | Learning rate 2e-5 too low for generator to recover after discriminator started working | Increased lr to 5e-5 for one run; then switched to `lambda_gen: 0.5` + `lr: 1e-5` for stable convergence |
+
 ### HiFiGAN Vocoder Compatibility (3 bugs)
 
-| # | Problem | Fix |
-|---|---|---|
-| 21 | `librosa.filters.mel()` positional args removed | Use keyword args: `sr=`, `n_fft=`, `n_mels=` |
-| 22 | `torch.stft()` requires `return_complex` | Added `return_complex=True`, updated magnitude extraction |
-| 23 | Feature matching tensor size mismatch | Clip to `min_len` before L1 loss |
+| # | Problem | Root Cause | Fix |
+|---|---|---|---|
+| 31 | `librosa.filters.mel()` positional args removed | New librosa API requires keyword arguments | `sr=`, `n_fft=`, `n_mels=`, `fmin=`, `fmax=` |
+| 32 | `torch.stft()` requires `return_complex` | PyTorch 2.x requires explicit complex output flag | Added `return_complex=True`, changed magnitude: `spec.real.pow(2) + spec.imag.pow(2)` |
+| 33 | Feature matching tensor size mismatch (1600 vs 1602) | Slight length difference between real and generated features due to conv padding | Clip both to `min_len` before L1 loss |
+
+---
+
+### 🔥 Second Most Painful — #23 (broken accumulation, weeks of bad training)
+
+Every Round 2 training run showed the discriminator frozen at exactly 4.44 — maximum entropy — meaning it had completely given up. The GAN looked active from the logs but was doing nothing.
+
+Root cause: `optimizer.zero_grad()` was called between the discriminator backward and the generator backward on every single batch. This wiped disc gradients before gen ran. Combined with `scaler.update()` being called twice per step, the disc never actually updated its weights despite appearing to train.
+
+Fix: Zero_grad only at epoch start and after each complete accumulation window. `scaler.update()` called exactly once after all optimizers are stepped.
+
+**Lesson:** In GAN training, disc and gen must accumulate gradients together before any optimizer step. Never zero_grad between them.
 
 ---
 
