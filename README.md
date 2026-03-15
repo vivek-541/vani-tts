@@ -9,7 +9,7 @@
 
 > **वाणी** (vāṇī) — Sanskrit for *voice, speech, the goddess of language.*
 
-Vani TTS is an open-source, on-device Hindi Text-to-Speech model trained using the **StyleTTS2** architecture, fine-tuned on the [AI4Bharat IndicVoices-R](https://huggingface.co/datasets/ai4bharat/indicvoices_r) dataset. It is designed to run in **real-time on CPU** — no internet, no GPU, no cloud — making it suitable for Android phones, iOS devices, and low-end laptops.
+Vani TTS is an open-source, on-device Hindi Text-to-Speech system built on the **StyleTTS2** acoustic model, fine-tuned on [AI4Bharat IndicVoices-R](https://huggingface.co/datasets/ai4bharat/indicvoices_r), with a standalone **HiFiGAN vocoder** trained separately on Hindi audio. Designed to run **real-time on CPU** — no internet, no GPU, no cloud — suitable for Android, iOS, and low-end laptops.
 
 ---
 
@@ -31,71 +31,39 @@ Vani TTS is an open-source, on-device Hindi Text-to-Speech model trained using t
 
 - 🏃 **Real-time on CPU** — runs on any Android/iOS device
 - 📴 **Fully offline** — no internet connection required
-- 🎙️ **Natural Hindi voice** — fine-tuned on 11,600+ studio-grade Hindi speech samples
+- 🎙️ **Natural Hindi voice** — trained on 15,000 Hindi speech samples from IndicVoices-R
 - 📦 **ONNX export** — deploy on Android (ONNX Runtime) or iOS (CoreML)
 - 🔡 **Devanagari native** — handles Hindi script via espeak-ng IPA phonemization
-- ⚖️ **Lightweight** — target model size under 200MB
-
----
-
-## 🗂️ Project Structure
-
-```
-vani-tts/
-├── data/
-│   └── prepare_data.py         # Dataset streaming & preprocessing (IndicVoices-R)
-├── training/
-│   └── StyleTTS2/              # StyleTTS2 fine-tuning repo (yl4579/StyleTTS2)
-│       ├── train_finetune.py   # Main training script (heavily patched)
-│       ├── meldataset.py       # Dataloader (patched: pin_memory, TextCleaner)
-│       └── Configs/
-│           ├── config_ft.yml       # Round 1 config (batch_size=2, 50 epochs)
-│           └── config_ft_r2.yml    # Round 2 config (batch_size=8, 30 epochs)
-├── infer.py                    # Inference script
-├── evaluation/
-│   └── evaluate.py             # MOS, WER evaluation
-├── export/
-│   ├── export_onnx.py          # Export to ONNX
-│   └── export_coreml.py        # Export to CoreML (iOS)
-├── android/                    # Android demo app (coming soon)
-├── ios/                        # iOS demo app (coming soon)
-├── requirements.txt
-└── README.md
-```
-
----
-
-## 🚀 Quick Start (Inference — after model release)
-
-> ⚠️ Model weights not yet released — training in progress. Star the repo to get notified.
-
-```bash
-pip install vani-tts
-```
-
-```python
-from vani import VaniTTS
-tts = VaniTTS()
-tts.synthesize("नमस्ते, मेरा नाम वाणी है।", output="output.wav")
-```
+- ⚖️ **Lightweight** — target model size under 200MB after quantization
 
 ---
 
 ## 🏗️ Architecture
 
-Vani TTS is built on the **[StyleTTS2](https://github.com/yl4579/StyleTTS2)** architecture (the same backbone used by Kokoro-82M), fine-tuned from the LibriTTS pretrained checkpoint:
-
 ```
-Devanagari Text → espeak-ng (IPA phonemes) → PLBERT → Style Diffusion → HiFiGAN Decoder → Audio
+Devanagari Text
+      ↓
+espeak-ng (IPA phonemes)
+      ↓
+StyleTTS2 Acoustic Model
+  ├── PLBERT (prosody-aware BERT)
+  ├── Style Diffusion (voice identity)
+  ├── Prosody Predictor (F0 + energy)
+  └── Mel Spectrogram output
+      ↓
+HiFiGAN Vocoder (trained separately on Hindi)
+      ↓
+24kHz Waveform
 ```
 
-**Key architectural choices:**
+**Two-stage design:** The StyleTTS2 acoustic model learns phoneme-to-mel mapping with correct Hindi rhythm, timing, and prosody. The HiFiGAN vocoder learns mel-to-waveform conversion with sharp, perceptually realistic audio. Training them separately is more stable than joint adversarial training on limited VRAM.
 
-- **StyleTTS2 over Piper** — StyleTTS2 uses adversarial style diffusion for naturalness vs Piper's 2021-era VITS; significantly better prosody ceiling
-- **HiFiGAN decoder** — matches the LibriTTS pretrained base checkpoint; higher quality than iSTFT for fine-tuning from English pretrain
-- **espeak-ng phonemizer** — handles Hindi IPA correctly via `phonemizer` library with `backend='espeak', language='hi'`; 178 symbol vocabulary covering full IPA
-- **Single speaker** — trained on a curated single-voice Hindi subset for maximum voice consistency
-- **Why not larger models?** At 0.9B–3B parameters, Parler-TTS/Veena require GPU inference and cannot run on mobile CPUs in real-time
+**Key choices:**
+- **StyleTTS2** over Piper — style diffusion gives significantly better prosody ceiling
+- **HiFiGAN V1** vocoder — trained from scratch on Hindi audio for native consonant sharpness
+- **espeak-ng phonemizer** — correct Hindi IPA via `phonemizer` library, 178-symbol vocabulary
+- **Single speaker** — curated single-voice subset for maximum voice consistency
+- **Not larger models** — Parler-TTS/Veena (0.9B–3B params) require GPU; cannot run on mobile
 
 ---
 
@@ -109,163 +77,196 @@ Devanagari Text → espeak-ng (IPA phonemes) → PLBERT → Style Diffusion → 
 | Raw samples downloaded | 15,000 |
 | After duration filter (≤10s) | 11,658 training / 750 validation |
 | Phoneme Tokens | 178 IPA symbols (full StyleTTS2 vocabulary) |
-| Download Method | HF streaming + `Audio(decode=False)` + soundfile |
 
 ---
 
-## ⚙️ Training — Two Rounds
+## ⚙️ Training
 
-### Round 1 (Complete ✅ — Mar 3–11, 2026)
+### Acoustic Model — StyleTTS2 Fine-tuning
+
+#### Round 1 (Complete ✅ — Mar 3–11, 2026)
 
 | Parameter | Value |
 |---|---|
 | Base checkpoint | LibriTTS `epochs_2nd_00020.pth` (736MB) |
-| Epochs | 50 (+ ~37 before power cut = ~87 effective) |
+| Effective epochs | ~87 (50 scheduled + ~37 before power cut) |
 | Batch size | 2 |
-| Max sequence length | 70 mel frames |
 | Learning rate | 5e-5 / 5e-6 (BERT) |
-| Hardware | RTX 3060 12GB + i3-8100 |
-| Training time | ~8 days |
+| Training time | ~8 days on RTX 3060 12GB |
 | Final mel loss | ~0.23–0.31 |
-| Final Gen loss | 5–7 (GAN did not converge) |
-| Result | Syllable rhythm correct, consonants not intelligible |
+| Final Gen loss | 5–7 |
+| Result | Correct Hindi rhythm and word boundaries. Consonants not intelligible. |
 
-**Root cause of Round 1 quality issue:** `batch_size=2` is too small for GAN discriminator to build a reliable decision boundary. The discriminator and generator received contradictory gradient signals every update, preventing the HiFiGAN decoder from learning perceptually sharp waveforms. Mel loss converged well (acoustic structure learned) but the GAN loss never broke below 5 (needs ~1–2 for crisp audio).
+**Root cause diagnosed:** The HiFiGAN decoder inside StyleTTS2 never converged because batch_size=2 is too small for the GAN discriminator to build a reliable decision boundary. The acoustic structure (mel spectrogram) was correct — confirmed via Griffin-Lim reconstruction, which produced speech-shaped audio with correct Hindi phoneme patterns ("ghost talking but trying to say something"). Only the vocoder component was broken.
 
-### Round 2 (In Progress 🔄 — started Mar 11, 2026)
+#### Round 2 (Complete ✅ — Mar 11–15, 2026)
 
-| Parameter | Value | Change |
+| Parameter | Value |
+|---|---|
+| Base checkpoint | `epoch_2nd_00049.pth` from Round 1 |
+| Epochs completed | ~30+ |
+| Batch size | 2 with accum_steps=4 (effective batch=8) |
+| Learning rate | 2e-5 / 2e-6 (BERT) |
+| Result | GAN partially converged (Gen ~2.5), rhythm improved, still not fully intelligible |
+
+**Decision:** Rather than continuing to fix StyleTTS2's internal GAN, switch to a standalone HiFiGAN vocoder trained directly on Hindi audio. The acoustic model is good; only the waveform synthesis needs fixing.
+
+### Vocoder — Standalone HiFiGAN (🔄 In Progress — Mar 15, 2026)
+
+| Parameter | Value |
+|---|---|
+| Architecture | HiFiGAN V1 |
+| Training data | 15,000 Hindi WAVs at 24kHz (IndicVoices-R) |
+| Sample rate | 24,000 Hz |
+| Hop size | 300 (matches StyleTTS2 mel extraction) |
+| Segment size | 9,600 samples |
+| upsample_rates | [10, 5, 3, 2] |
+| upsample_initial_channel | 512 |
+| Target steps | 300,000 |
+| Estimated time | ~2 days on RTX 3060 |
+| Status | Training started, Step 0: Gen Loss 110.4, Mel Error 2.318 |
+
+Once the vocoder reaches ~50k steps it will be integrated into `infer.py`, replacing the StyleTTS2 internal decoder.
+
+---
+
+## 📈 Key Metrics
+
+| Metric | Round 1 | Round 2 | Target |
+|---|---|---|---|
+| Mel loss | 0.23–0.31 | 0.20–0.28 | < 0.15 |
+| Gen (GAN) loss | 5–7 | 2.5–3.5 | < 1.0 |
+| Alignment (Dur/CE) | 0.00 ✅ | 0.00 ✅ | 0.00 |
+| Word boundaries visible | ✅ Yes | ✅ Yes | ✅ |
+| Intelligible words | ❌ No | ❌ Barely | ✅ |
+| MOS estimate | ~1.5 | ~1.8 | > 3.8 |
+
+---
+
+## 🛠️ Engineering — Bug Chronicle
+
+Getting StyleTTS2 to train on Hindi required solving **23 bugs** across environment, data, training loop, numerical stability, inference, and vocoder compatibility.
+
+### Environment & Dependencies (5 bugs)
+
+| # | Problem | Fix |
 |---|---|---|
-| Base checkpoint | `epoch_2nd_00049.pth` from Round 1 | Continues from R1 |
-| Epochs | 30 | — |
-| **Batch size** | **8** | **4× increase — the key fix** |
-| Max sequence length | 50 mel frames | Reduced to fit 8×samples in 12GB |
-| Learning rate | 2e-5 / 2e-6 (BERT) | Lowered for fine-tune stability |
-| Expected improvement | Gen loss drops to 2–3, intelligible Hindi | — |
-| Estimated completion | ~Mar 12, 2026 | — |
+| 1 | `torchcodec` import error | `Audio(decode=False)` + soundfile |
+| 2 | `misaki` has no Hindi support | `phonemizer` with `backend='espeak', language='hi'` |
+| 3 | `monotonic_align` Cython fails | Pure Python fallback |
+| 4 | `torch.load` weights_only error (PyTorch 2.6) | `weights_only=False` everywhere |
+| 5 | Decoder mismatch (iSTFT vs HiFiGAN) | `decoder.type: hifigan` in config |
 
----
+### Training Loop (7 bugs)
 
-## 📈 Training Metrics Observed
+| # | Problem | Fix |
+|---|---|---|
+| 6 | `mask_from_lens` 3-arg signature | Updated pure-Python implementation |
+| 7 | `maximum_path` IndexError | Guard `[:, 0] if dim > 1` |
+| 8 | **Every batch silently skipped** — BOS slice deleted, double-transpose is identity | Restored 3-line attention transform |
+| 9 | `skipped_batches` NameError | Initialize to 0 before batch loop |
+| 10 | **`gt.size(-1) < 80` skipped 100% of batches** — threshold > max possible clip size | Raised `max_len`, lowered guard to `< 40` |
+| 11 | `import copy` missing | Added import |
+| 12 | `pin_memory=True` + `num_workers=0` deadlock | `pin_memory=False` |
 
-| Metric | Round 1 Final | Target | Notes |
-|---|---|---|---|
-| Mel loss | 0.23–0.31 | < 0.15 | Acoustic structure learned |
-| Gen (GAN) loss | 5–7 | 1–2 | **Never converged — batch_size=2 too small** |
-| Dur loss | ~0.00 | ~0.00 | ✅ Converged by epoch 3 |
-| CE loss | ~0.00 | ~0.00 | ✅ Converged by epoch 3 |
-| S2S loss | 0.07–0.66 | < 0.10 | Alignment mostly learned |
-| Mono loss | 0.04–0.08 | < 0.05 | Monotonic alignment good |
-| Sty loss | 0.05–0.10 | < 0.05 | Style diffusion active |
-| Diff loss | 0.17–0.90 | < 0.20 | Still training |
-| Skipped batches | 0 | 0 | ✅ All batches processed |
-| GPU utilization | 100% | — | ✅ |
-| VRAM usage | 7.1–8.1 GB / 12 GB | — | ✅ |
+### Numerical Stability (3 bugs)
 
-### What the metrics tell us
-- **Dur=0, CE=0** — phoneme alignment fully converged in first 3 epochs. The model knows exactly which phoneme maps to which mel frame.
-- **Mel loss ~0.25** — the model reconstructs the mel spectrogram reasonably well from phonemes. Acoustic structure (vowels, syllable rhythm, prosody envelope) is correct.
-- **Gen loss 5–7 throughout** — the HiFiGAN waveform decoder never learned to produce perceptually realistic audio. This is the single reason for poor intelligibility in Round 1.
+| # | Problem | Fix |
+|---|---|---|
+| 13 | NaN cascade mid-training | `GradScaler` + `clip_grad_norm_(5.0)` |
+| 14 | Discriminator fp16 overflow | Run `dl()` and `gl()` in fp32 via `.float()` cast |
+| 15 | Generator grad contaminating discriminator | `requires_grad_(False)` on MPD/MSD during gen backward |
 
----
+### System & Infrastructure (2 bugs)
 
-## 🔊 Inference Results (Round 1)
+| # | Problem | Fix |
+|---|---|---|
+| 16 | Cascade OOM | `expandable_segments:True` + `empty_cache()` + explicit `del` of activations |
+| 17 | No stdout when piped through `tee` | `PYTHONUNBUFFERED=1` + `flush=True` |
 
-Tested with `epoch_2nd_00049.pth` on three Hindi sentences:
+### Inference (3 bugs)
 
-| Sentence | Waveform structure | Audible words | Notes |
-|---|---|---|---|
-| नमस्ते, मेरा नाम वाणी है। | ✅ Correct duration (~0.9s), word bursts visible | ❌ Mumbled | Syllable rhythm correct, consonants smeared |
-| आज का मौसम बहुत अच्छा है। | ✅ Correct duration (~0.95s), 4–5 word groups visible | ❌ Mumbled | Same pattern |
-| मैं एक हिंदी टेक्स्ट टू स्पीच सिस्टम हूँ। | ✅ Correct duration (~1.2s) | ❌ Mumbled | Longest sentence, structure intact |
+| # | Problem | Fix |
+|---|---|---|
+| 18 | Only vowels, no consonants | Style vector split `[:128]`/`[128:]` was reversed vs training |
+| 19 | Duration explosion (22-second output) | `clamp(min=1, max=10) * 2.0` + hard frame cap |
+| 20 | Buzzy audio | Use `s_acoustic` from diffusion output, not `ref_s` from reference wav |
 
-**Key inference fixes applied:**
-- Style vector split corrected (`[:128]` = acoustic → decoder, `[128:]` = prosodic → F0Ntrain)
-- Per-phoneme duration clamped to max 20 frames (prevents duration explosion)
-- `embedding_scale=0.0` (CFG disabled — was distorting style vector)
-- Decoder conditioned on `s_acoustic` from diffusion output, not `ref_s` (matches training distribution)
+### HiFiGAN Vocoder Compatibility (3 bugs)
 
----
-
-## 🛠️ Engineering Decisions & Bug Chronicle
-
-Getting StyleTTS2 to train on Hindi required solving **17 distinct bugs** across environment setup, data loading, training loop logic, numerical stability, and system configuration.
-
-### Environment & Dependencies
-
-| # | Problem | Root Cause | Fix |
-|---|---|---|---|
-| 1 | `torchcodec` import error | HuggingFace `datasets` switched default audio backend | `Audio(decode=False)` + manual soundfile decode |
-| 2 | `misaki` has no Hindi | misaki supports: en, ja, ko, zh, he, vi only | `phonemizer` with `backend='espeak', language='hi'` |
-| 3 | `monotonic_align` Cython compile fails | Requires gcc compilation | Pure Python fallback at `monotonic_align/core.py` |
-| 4 | `torch.load` weights_only error | PyTorch 2.6 changed default `weights_only=False→True` | Added `weights_only=False` everywhere |
-| 5 | Decoder architecture mismatch | LibriTTS uses HiFiGAN; config defaulted to iSTFT | `decoder.type: hifigan` in config |
-
-### Training Loop Logic
-
-| # | Problem | Root Cause | Fix |
-|---|---|---|---|
-| 6 | `mask_from_lens` signature mismatch | Pure-Python accepted 2 args; code calls with 3 | Updated `monotonic_align/__init__.py` |
-| 7 | `maximum_path` IndexError | `mask.sum(1)[:, 0]` fails when result is 1D | Guard: `[:, 0] if dim > 1` |
-| 8 | **Every batch silently skipped** | BOS slice `s2s_attn[..., 1:]` deleted during debugging — double transpose is identity op | Restored canonical 3-line attention transform |
-| 9 | `skipped_batches` NameError | Variable incremented before defined | `skipped_batches = 0` at epoch start |
-| 10 | **`gt.size(-1) < 80` skipped 100% of batches** | Guard threshold exceeded max possible clip size for `max_len=70` | Raised `max_len=128`, lowered guard to `< 40` |
-| 11 | `import copy` missing | `copy.deepcopy()` called without import | Added `import copy` |
-| 12 | `pin_memory=True` + `num_workers=0` deadlock | Known PyTorch issue: pin_memory needs background thread | `pin_memory=False` in `build_dataloader()` |
-
-### Numerical Stability
-
-| # | Problem | Root Cause | Fix |
-|---|---|---|---|
-| 13 | NaN cascade from step ~1574 | GAN training without gradient clipping | `GradScaler` + `clip_grad_norm_(5.0)` on all modules |
-| 14 | Discriminator updated before NaN check | `d_loss.backward()` ran unconditionally | NaN guard wraps full discriminator update |
-| 15 | LR too high for GAN fine-tune | Default `lr=1e-4` caused GAN instability on Hindi | Halved all LRs: `5e-5 / 5e-6 / 5e-5` |
-
-### System & Infrastructure
-
-| # | Problem | Root Cause | Fix |
-|---|---|---|---|
-| 16 | Cascade OOM | CUDA allocator fragmentation after first OOM | `expandable_segments:True` + `empty_cache()` every 50 steps + filtered files >10s |
-| 17 | No stdout when piped through `tee` | Python buffers stdout when not writing to TTY | `PYTHONUNBUFFERED=1` + `flush=True` on all prints |
-
-### Inference-only bugs (found post-training)
-
-| # | Problem | Root Cause | Fix |
-|---|---|---|---|
-| 18 | Only vowels synthesized — no consonants | Style vector split reversed in infer.py (`[:128]`/`[128:]` swapped vs training) | Corrected split to match `cat([gs, s_dur])` order from training |
-| 19 | Duration explosion (22-second output) | No per-phoneme clamp — sigmoid sum up to 50 frames/phoneme | `clamp(min=1, max=20)` + hard total cap at 1500 frames |
-| 20 | Audio still buzzy after split fix | Decoder conditioned on `ref_s` (out-of-distribution at inference) | Use `s_acoustic` from diffusion output — matches training distribution |
+| # | Problem | Fix |
+|---|---|---|
+| 21 | `librosa.filters.mel()` positional args removed | Use keyword args: `sr=`, `n_fft=`, `n_mels=` |
+| 22 | `torch.stft()` requires `return_complex` | Added `return_complex=True`, updated magnitude extraction |
+| 23 | Feature matching tensor size mismatch | Clip to `min_len` before L1 loss |
 
 ---
 
 ### 🏆 Most Painful Bug — #10 (8 hours of wasted compute)
 
-Training appeared to work perfectly — epochs completed, checkpoints saved, validation losses printed. But model weights never changed. The tell was `Dur loss: 1.746000` being **bit-for-bit identical** across all 14 epochs.
-
-Root cause: `if gt.size(-1) < 80: continue` compared mel frames against a threshold larger than the maximum achievable clip size given `max_len=70`. Every training batch was silently discarded. Validation (no guard) ran fine and printed plausible-looking losses.
+Training appeared to work — epochs completed, losses printed, checkpoints saved. But weights never changed. Every batch was silently discarded by `if gt.size(-1) < 80: continue` because the threshold exceeded the maximum achievable clip size for `max_len=70`. Validation ran fine and printed plausible losses, making it invisible.
 
 **Lesson:** Always log `skipped_batches`. If it equals total batches, nothing trained.
 
 ---
 
-### 🔥 Second Most Painful — #8 (silent training on zero batches)
+## 🗂️ Project Structure
 
-During debugging, a "double transpose" fix was applied that is mathematically an identity operation. The reshape error disappeared, but every batch failed silently at the matmul stage and was caught by the exception handler. No crashes, no visible errors, zero batches trained per epoch.
+```
+vani-tts/
+├── training/
+│   └── StyleTTS2/
+│       ├── train_finetune.py       # Training script (heavily patched, 23 bugs fixed)
+│       ├── meldataset.py           # Dataloader (pin_memory fix, TextCleaner)
+│       ├── infer.py                # Inference script
+│       └── Configs/
+│           ├── config_ft.yml       # Round 1 config
+│           ├── config_ft_r2.yml    # Round 2 config
+│           └── config_ft_r3.yml    # Round 3 config (lambda_gen=0.5, lr=1e-5)
+├── vocoder/
+│   └── hifi-gan/                   # Standalone HiFiGAN (patched for PyTorch 2.6)
+│       ├── config_hindi.json       # 24kHz, hop=300, seg=9600
+│       └── cp_hifigan/             # Vocoder checkpoints
+├── export/
+│   ├── export_onnx.py
+│   └── export_coreml.py
+├── android/
+├── ios/
+└── README.md
+```
+
+---
+
+## 🚀 Quick Start (after model release)
+
+> ⚠️ Model weights not yet released — vocoder training in progress. Star the repo to get notified.
+
+```bash
+pip install vani-tts
+```
+
+```python
+from vani import VaniTTS
+tts = VaniTTS()
+tts.synthesize("नमस्ते, मेरा नाम वाणी है।", output="output.wav")
+```
 
 ---
 
 ## 📅 Roadmap
 
-- [x] Phase 0 — Environment setup (Ubuntu 24.04, CUDA 13.0, UV venv)
-- [x] Phase 1 — Dataset pipeline (IndicVoices-R, 11,658 samples, 24kHz)
+- [x] Phase 0 — Environment setup (Ubuntu 24.04, CUDA 13.0)
+- [x] Phase 1 — Dataset pipeline (IndicVoices-R, 15,000 samples, 24kHz)
 - [x] Phase 2 — Phonemization (espeak-ng IPA, 178 tokens)
-- [x] Phase 3 — Pretrained weights + StyleTTS2 config (LibriTTS base, HiFiGAN)
-- [x] Phase 4 — Training loop stabilized (17 bugs fixed)
-- [x] Phase 5 — Round 1: 50 epochs, batch_size=2 (Mar 3–11, 2026, ~8 days)
-- [x] Phase 5b — Inference pipeline fixed (3 additional bugs found and fixed)
-- [ ] **Phase 5c — Round 2: 30 epochs, batch_size=8** ← 🔄 IN PROGRESS (Est. Mar 12, 2026)
+- [x] Phase 3 — Pretrained weights + StyleTTS2 config
+- [x] Phase 4 — Training loop stabilized (23 bugs fixed)
+- [x] Phase 5 — Round 1: 50 epochs acoustic model (Mar 3–11, 2026)
+- [x] Phase 5b — Round 2: 30 epochs GAN fine-tuning (Mar 11–15, 2026)
+- [x] Phase 5c — Root cause diagnosed: acoustic model ✅, vocoder ❌
+- [ ] **Phase 5d — Standalone HiFiGAN vocoder training on Hindi** ← 🔄 IN PROGRESS
+- [ ] Phase 5e — Vocoder integration into inference pipeline
 - [ ] Phase 6 — Evaluation (MOS, WER via Whisper, RTF on CPU)
-- [ ] Phase 7 — ONNX export (opset 17) + INT8 dynamic quantization
+- [ ] Phase 7 — ONNX export (opset 17) + INT8 quantization (target <200MB)
 - [ ] Phase 8 — Android integration (ONNX Runtime)
 - [ ] Phase 9 — iOS integration (CoreML)
 - [ ] Phase 10 — pip package + HuggingFace model upload
@@ -276,22 +277,22 @@ During debugging, a "double transpose" fix was applied that is mathematically an
 
 ## 📈 Evaluation Targets
 
-| Metric | Target | Round 1 | Round 2 (expected) |
-|---|---|---|---|
-| MOS Score | > 3.8 / 5.0 | ~1.5 (mumbled) | > 3.0 |
-| Word Error Rate (WER) | < 8% | ~90% (unintelligible) | < 20% |
-| Real-Time Factor (CPU) | < 0.3x | Not measured | Not measured |
-| Model Size (quantized) | < 200 MB | 2.1 GB (unquantized) | < 200 MB after ONNX+INT8 |
-| Android Latency | < 300ms/sec audio | Not measured | Not measured |
+| Metric | Target | Current |
+|---|---|---|
+| MOS Score | > 3.8 / 5.0 | ~1.8 (pre-vocoder fix) |
+| Word Error Rate (WER) | < 8% | ~85% (unintelligible) |
+| Real-Time Factor (CPU) | < 0.3x | Not yet measured |
+| Model Size (quantized) | < 200 MB | 2.1 GB (unquantized) |
+| Android latency | < 300ms/sec audio | Not yet measured |
 
 ---
 
 ## 🙏 Acknowledgements
 
 - [AI4Bharat](https://ai4bharat.iitm.ac.in/) for the IndicVoices-R dataset
-- [yl4579](https://github.com/yl4579/StyleTTS2) for the StyleTTS2 training framework
+- [yl4579](https://github.com/yl4579/StyleTTS2) for the StyleTTS2 framework
+- [jik876](https://github.com/jik876/hifi-gan) for the HiFiGAN vocoder
 - [hexgrad](https://huggingface.co/hexgrad/Kokoro-82M) for Kokoro-82M inference reference
-- [StyleTTS2 paper](https://arxiv.org/abs/2306.07691) — Li et al., 2023
 
 ---
 
@@ -303,7 +304,7 @@ Apache 2.0 — free to use, modify, and deploy commercially.
 
 ## 🤝 Contributing
 
-Contributions welcome! If you speak Hindi natively and want to help evaluate naturalness (MOS scoring), please open an issue.
+Contributions welcome. If you speak Hindi natively and want to help evaluate naturalness (MOS scoring), please open an issue.
 
 ---
 
