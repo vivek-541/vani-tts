@@ -49,18 +49,20 @@ StyleTTS2 Acoustic Model
   ├── PLBERT (prosody-aware BERT)
   ├── Style Diffusion (voice identity)
   ├── Prosody Predictor (F0 + energy)
-  └── Mel Spectrogram output
+  └── Internal HiFiGAN decoder → rough waveform
       ↓
-HiFiGAN Vocoder (trained separately on Hindi)
+  mel spectrogram extraction
       ↓
-24kHz Waveform
+Standalone HiFiGAN Vocoder (trained on Hindi audio)
+      ↓
+24kHz Clean Waveform
 ```
 
-**Two-stage design:** The StyleTTS2 acoustic model learns phoneme-to-mel mapping with correct Hindi rhythm, timing, and prosody. The HiFiGAN vocoder learns mel-to-waveform conversion with sharp, perceptually realistic audio. Training them separately is more stable than joint adversarial training on limited VRAM.
+**Two-stage design:** The StyleTTS2 acoustic model learns phoneme-to-mel mapping with correct Hindi rhythm, timing, and prosody. Its internal decoder produces a rough waveform which is converted back to a mel spectrogram. The standalone HiFiGAN vocoder then converts this mel to the final clean audio, having been trained purely on real Hindi speech.
 
 **Key choices:**
 - **StyleTTS2** over Piper — style diffusion gives significantly better prosody ceiling
-- **HiFiGAN V1** vocoder — trained from scratch on Hindi audio for native consonant sharpness
+- **HiFiGAN V1 standalone vocoder** — trained from scratch on Hindi audio for native consonant sharpness; avoids the GAN instability of joint training on 12GB VRAM
 - **espeak-ng phonemizer** — correct Hindi IPA via `phonemizer` library, 178-symbol vocabulary
 - **Single speaker** — curated single-voice subset for maximum voice consistency
 - **Not larger models** — Parler-TTS/Veena (0.9B–3B params) require GPU; cannot run on mobile
@@ -98,7 +100,7 @@ HiFiGAN Vocoder (trained separately on Hindi)
 | Final Gen loss | 5–7 |
 | Result | Correct Hindi rhythm and word boundaries. Consonants not intelligible. |
 
-**Root cause diagnosed:** The HiFiGAN decoder inside StyleTTS2 never converged because batch_size=2 is too small for the GAN discriminator to build a reliable decision boundary. The acoustic structure (mel spectrogram) was correct — confirmed via Griffin-Lim reconstruction, which produced speech-shaped audio with correct Hindi phoneme patterns ("ghost talking but trying to say something"). Only the vocoder component was broken.
+**Root cause diagnosed:** The HiFiGAN decoder inside StyleTTS2 never converged because batch_size=2 is too small for the GAN discriminator to build a reliable decision boundary. The acoustic structure (mel spectrogram) was correct — confirmed via Griffin-Lim reconstruction, which produced speech-shaped audio with correct Hindi phoneme patterns. Only the vocoder component was broken.
 
 #### Round 2 (Complete ✅ — Mar 11–15, 2026)
 
@@ -108,11 +110,11 @@ HiFiGAN Vocoder (trained separately on Hindi)
 | Epochs completed | ~30+ |
 | Batch size | 2 with accum_steps=4 (effective batch=8) |
 | Learning rate | 2e-5 / 2e-6 (BERT) |
-| Result | GAN partially converged (Gen ~2.5), rhythm improved, still not fully intelligible |
+| Result | GAN partially converged (Gen ~2.5), rhythm improved, word boundaries clearly visible in waveform |
 
-**Decision:** Rather than continuing to fix StyleTTS2's internal GAN (which requires 12GB+ for effective adversarial training), switch to a standalone HiFiGAN vocoder trained directly on Hindi audio. The acoustic model is confirmed good; only the waveform synthesis stage needs fixing.
+**Decision:** Rather than continuing to fix StyleTTS2's internal GAN (which requires >12GB VRAM for effective adversarial training), switch to a standalone HiFiGAN vocoder trained directly on Hindi audio. The acoustic model is confirmed good; only the waveform synthesis stage needs fixing.
 
-### Vocoder — Standalone HiFiGAN (🔄 In Progress — Mar 15, 2026)
+### Vocoder — Standalone HiFiGAN (🔄 In Progress — started Mar 15, 2026)
 
 | Parameter | Value |
 |---|---|
@@ -127,26 +129,33 @@ HiFiGAN Vocoder (trained separately on Hindi)
 | upsample_initial_channel | 512 |
 | Batch size | 16 |
 | Target steps | 100,000 |
-| Estimated time | ~10 days on RTX 3060 |
-| Current status | Step ~6,000 / Mel Error ~0.40 / actively training |
+| Current step | ~27,000 |
+| Current Mel Error | ~0.29 (down from 2.3 at step 0) |
+| Current status | Actively training — waveform structure confirmed correct at 25k steps |
 
-**Why standalone HiFiGAN works where internal GAN failed:** HiFiGAN trains on (mel, waveform) pairs directly from real audio — no phoneme alignment, no style diffusion, no multi-loss balancing. The task is much simpler: learn to invert a mel spectrogram. At 50k steps it produces clean waveforms; at 100k steps it should match or exceed the quality of the internal StyleTTS2 decoder.
+**Progress so far:**
 
-**Integration:** The vocoder replaces `model.decoder` in `infer.py`. The StyleTTS2 acoustic model generates a mel spectrogram via its internal decoder (used only as a mel source), which is then passed to the standalone HiFiGAN generator for final audio synthesis.
+| Step | Mel Error | Audio quality |
+|---|---|---|
+| 0 | 2.318 | Random noise |
+| 5,000 | 0.401 | Rough speech rhythm |
+| 10,000 | 0.369 | Word boundaries visible |
+| 15,000 | 0.330 | Cleaner structure |
+| 25,000 | 0.291 | Natural amplitude modulation, word gaps correct |
+| 50,000 | ~0.15 (target) | Expected: intelligible Hindi |
+| 100,000 | ~0.08 (target) | Expected: clear natural speech |
 
 ---
 
 ## 📈 Key Metrics
 
-| Metric | Round 1 | Round 2 | Vocoder Target |
-|---|---|---|---|
-| Mel loss (acoustic) | 0.23–0.31 | 0.20–0.28 | — |
-| HiFiGAN Mel Error | — | — | < 0.10 at 50k steps |
-| Gen (GAN) loss | 5–7 | 2.5–3.5 | — |
-| Alignment (Dur/CE) | 0.00 ✅ | 0.00 ✅ | — |
-| Word boundaries visible | ✅ Yes | ✅ Yes | ✅ |
-| Intelligible words | ❌ No | ❌ Barely | ✅ Expected at 50k steps |
-| MOS estimate | ~1.5 | ~1.8 | > 3.8 |
+| Metric | Round 1 | Round 2 | Vocoder at 25k | Target |
+|---|---|---|---|---|
+| Mel loss (acoustic) | 0.23–0.31 | 0.20–0.28 | — | — |
+| HiFiGAN Mel Error | — | — | 0.29 | < 0.10 |
+| Word boundaries visible in waveform | ✅ | ✅ | ✅ | ✅ |
+| Intelligible words | ❌ | ❌ | ❌ (too early) | ✅ at 50k steps |
+| MOS estimate | ~1.5 | ~1.8 | ~2.0 | > 3.8 |
 
 ---
 
@@ -172,7 +181,7 @@ Getting this system to work required solving **33 bugs** across environment, dat
 | 7 | `maximum_path` IndexError | Guard `[:, 0] if dim > 1` |
 | 8 | **Every batch silently skipped** — BOS slice deleted, double-transpose is identity | Restored 3-line attention transform |
 | 9 | `skipped_batches` NameError | Initialize to 0 before batch loop |
-| 10 | **`gt.size(-1) < 80` skipped 100% of batches** — threshold > max possible clip size | Raised `max_len`, lowered guard to `< 40` |
+| 10 | **`gt.size(-1) < 80` skipped 100% of batches** | Raised `max_len`, lowered guard to `< 40` |
 | 11 | `import copy` missing | Added import |
 | 12 | `pin_memory=True` + `num_workers=0` deadlock | `pin_memory=False` |
 
@@ -195,38 +204,38 @@ Getting this system to work required solving **33 bugs** across environment, dat
 
 | # | Problem | Fix |
 |---|---|---|
-| 18 | Only vowels, no consonants | Style vector split `[:128]`/`[128:]` was reversed vs training |
-| 19 | Duration explosion (22-second output) | `clamp(min=1, max=8) * 1.0` + hard frame cap at 100 |
-| 20 | Buzzy audio | Use `s_acoustic` from diffusion output, not `ref_s` from reference wav |
+| 18 | Only vowels, no consonants | Style vector split `[:128]`/`[128:]` reversed vs training |
+| 19 | Duration explosion (22-second output) | `clamp(min=1, max=8)` + hard frame cap at 80 |
+| 20 | Buzzy audio | Use `s_acoustic` from diffusion output, not `ref_s` |
 
 ### Round 2 GAN Stabilization (10 bugs)
 
 | # | Problem | Root Cause | Fix |
 |---|---|---|---|
-| 21 | OOM cascade at batch ~4000 | Cache clear every 50 batches not frequent enough | `del` activation tensors every batch + `empty_cache()` every 20 steps |
-| 22 | Validation OOM — all batches failed | Training tensors still allocated entering val | `empty_cache()` before each val batch + reduced val to 10 batches |
-| 23 | **Broken gradient accumulation** — disc never updated | `optimizer.zero_grad()` called between disc and gen backward; `scaler.update()` called twice | Zero_grad only after full accumulation window; `scaler.update()` called exactly once |
-| 24 | `d_loss` NaN cascade | `dl()` inside `autocast` — spectral-normed convolutions overflow fp16 | Remove autocast from `dl()`, run in fp32 |
-| 25 | `g_loss` NaN cascade after fix #24 | `gl()` still inside autocast — same fp16 overflow | Remove autocast from `gl()`, run in fp32 |
-| 26 | `RuntimeError: Input type (Half) and bias type (float)` | `y_rec` exits autocast as fp16 but `gl()` expects fp32 | `gl(wav.float(), y_rec.float())` |
-| 27 | Discriminator frozen at 4.44 (max entropy) | `g_loss.backward()` updated disc weights opposite to `d_loss.backward()` | Freeze disc with `requires_grad_(False)` before gen backward, unfreeze after |
-| 28 | `RuntimeError: element 0 of tensors does not require grad` | NaN `continue` bypassed unfreeze, leaving disc frozen into next batch | Safety unfreeze at start of every batch |
-| 29 | `accum_count` not reset on skip | Partial gradients from failed batches accumulated into next window | Reset `accum_count = 0` on every `continue` path |
-| 30 | GAN lazy equilibrium — stuck for 6+ epochs | LR too low for generator to recover after discriminator started working | `lambda_gen: 0.5` + `lr: 1e-5` for stable convergence |
+| 21 | OOM cascade at batch ~4000 | Cache clear every 50 batches not frequent enough | `del` activation tensors + `empty_cache()` every 20 steps |
+| 22 | Validation OOM | Training tensors still allocated entering val | `empty_cache()` before each val batch + 10-batch limit |
+| 23 | **Broken gradient accumulation** | `optimizer.zero_grad()` between disc and gen backward | Zero_grad only after full accumulation window |
+| 24 | `d_loss` NaN cascade | `dl()` inside autocast overflows fp16 | Remove autocast from `dl()` |
+| 25 | `g_loss` NaN cascade | `gl()` inside autocast overflows fp16 | Remove autocast from `gl()` |
+| 26 | `RuntimeError: Input type (Half) and bias type (float)` | `y_rec` exits autocast as fp16 | `gl(wav.float(), y_rec.float())` |
+| 27 | Discriminator frozen at 4.44 | `g_loss.backward()` contaminated disc weights | Freeze disc during gen backward |
+| 28 | `RuntimeError: element 0 does not require grad` | NaN `continue` skipped unfreeze, disc stayed frozen | Safety unfreeze at start of every batch |
+| 29 | `accum_count` not reset on skip | Partial gradients from failed batches | Reset `accum_count = 0` on every `continue` path |
+| 30 | GAN stuck in lazy equilibrium | LR too low after disc started working | `lambda_gen: 0.5` + `lr: 1e-5` |
 
 ### HiFiGAN Vocoder Compatibility (3 bugs)
 
 | # | Problem | Root Cause | Fix |
 |---|---|---|---|
-| 31 | `librosa.filters.mel()` positional args error | New librosa API requires keyword arguments | `sr=`, `n_fft=`, `n_mels=`, `fmin=`, `fmax=` |
-| 32 | `torch.stft()` requires `return_complex` | PyTorch 2.x API change | `return_complex=True`; magnitude: `spec.real.pow(2) + spec.imag.pow(2)` |
-| 33 | Feature matching size mismatch (1600 vs 1602) | Conv padding causes slight length difference between real/generated | Clip to `min_len` before L1 loss |
+| 31 | `librosa.filters.mel()` positional args error | New librosa API requires keyword args | `sr=`, `n_fft=`, `n_mels=`, `fmin=`, `fmax=` |
+| 32 | `torch.stft()` requires `return_complex` | PyTorch 2.x API change | `return_complex=True`; magnitude via `.real`/`.imag` |
+| 33 | Feature matching size mismatch (1600 vs 1602) | Conv padding causes slight length difference | Clip to `min_len` before L1 loss |
 
 ---
 
 ### 🏆 Most Painful Bug — #10 (8 hours of wasted compute)
 
-Training appeared to work — epochs completed, losses printed, checkpoints saved. But weights never changed. Every batch was silently discarded by `if gt.size(-1) < 80: continue` because the threshold exceeded the maximum achievable clip size for `max_len=70`. Validation ran fine and printed plausible losses, making it invisible.
+Training appeared to work — epochs completed, losses printed, checkpoints saved. But weights never changed. Every batch was silently discarded by `if gt.size(-1) < 80: continue` because the threshold exceeded the maximum achievable clip size for `max_len=70`. Validation ran fine and printed plausible-looking losses, making the bug completely invisible.
 
 **Lesson:** Always log `skipped_batches`. If it equals total batches, nothing trained.
 
@@ -234,17 +243,15 @@ Training appeared to work — epochs completed, losses printed, checkpoints save
 
 ### 🔥 Second Most Painful — #23 (broken accumulation, weeks of bad training)
 
-Every Round 2 training run showed the discriminator frozen at exactly 4.44 — maximum entropy — meaning it had completely given up. The GAN looked active from the logs but was doing nothing.
+Every Round 2 run showed the discriminator frozen at exactly 4.44 — maximum entropy — meaning it had completely given up. The GAN looked active from the logs but was doing nothing. Root cause: `optimizer.zero_grad()` was called between the discriminator backward and the generator backward on every single batch, wiping disc gradients. Combined with `scaler.update()` called twice per step, the disc never updated despite appearing to train.
 
-Root cause: `optimizer.zero_grad()` was called between the discriminator backward and the generator backward on every single batch. This wiped disc gradients before gen ran. Combined with `scaler.update()` being called twice per step, the disc never actually updated its weights despite appearing to train.
-
-**Lesson:** In GAN training, disc and gen must accumulate gradients together before any optimizer step. Never zero_grad between them.
+**Lesson:** In GAN training, disc and gen must accumulate gradients together before any optimizer step.
 
 ---
 
-### 💡 Key Architectural Lesson — separate vocoder training
+### 💡 Key Architectural Lesson
 
-The internal StyleTTS2 GAN (discriminator inside the same training loop as alignment, duration, style, diffusion) creates conflicting gradient signals that are extremely hard to balance on 12GB VRAM with small batch sizes. Training a standalone HiFiGAN vocoder on the same audio data — with no text, no alignment, just (mel, wav) pairs — is dramatically more stable because it is a single-objective task. Same audio quality result, far fewer failure modes.
+The internal StyleTTS2 GAN creates conflicting gradient signals that are very hard to balance on 12GB VRAM with small batch sizes. Training a standalone HiFiGAN vocoder on the same audio data — with no text, no alignment, just (mel, wav) pairs — is dramatically more stable. Same audio quality result, far fewer failure modes.
 
 ---
 
@@ -258,15 +265,15 @@ vani-tts/
 │       ├── meldataset.py           # Dataloader (pin_memory fix, TextCleaner)
 │       ├── infer.py                # Inference — StyleTTS2 acoustic + HiFiGAN vocoder
 │       └── Configs/
-│           ├── config_ft.yml       # Round 1 config (batch=2, 50 epochs)
-│           ├── config_ft_r2.yml    # Round 2 config (accum_steps=4, effective batch=8)
-│           └── config_ft_r3.yml    # Round 3 config (lambda_gen=0.5, lr=1e-5)
+│           ├── config_ft.yml       # Round 1 config
+│           ├── config_ft_r2.yml    # Round 2 config (accum_steps=4)
+│           └── config_ft_r3.yml    # Round 3 config (lambda_gen=0.5)
 ├── vocoder/
-│   └── hifi-gan/                   # Standalone HiFiGAN (patched for PyTorch 2.6+)
-│       ├── config_hindi.json       # 24kHz, hop=300, seg=9600, upsample=[10,5,3,2]
-│       ├── meldataset.py           # Patched (return_complex, keyword args, min_len)
-│       ├── models.py               # Patched (feature matching min_len fix)
-│       └── cp_hifigan/             # Vocoder checkpoints (every 5000 steps)
+│   └── hifi-gan/
+│       ├── config_hindi.json       # 24kHz, hop=300, seg=9600
+│       ├── meldataset.py           # Patched for PyTorch 2.6+
+│       ├── models.py               # Patched (feature matching fix)
+│       └── cp_hifigan/             # Checkpoints (every 5000 steps)
 ├── export/
 │   ├── export_onnx.py
 │   └── export_coreml.py
@@ -279,7 +286,7 @@ vani-tts/
 
 ## 🚀 Quick Start (after model release)
 
-> ⚠️ Model weights not yet released — vocoder training in progress (~50k steps needed). Star the repo to get notified.
+> ⚠️ Model weights not yet released — vocoder training in progress (~27k/100k steps). Star the repo to get notified.
 
 ```bash
 pip install vani-tts
@@ -302,10 +309,11 @@ tts.synthesize("नमस्ते, मेरा नाम वाणी है�
 - [x] Phase 4 — Training loop stabilized (33 bugs fixed)
 - [x] Phase 5 — Round 1: 50 epochs acoustic model (Mar 3–11, 2026)
 - [x] Phase 5b — Round 2: 30 epochs GAN fine-tuning (Mar 11–15, 2026)
-- [x] Phase 5c — Root cause diagnosed: acoustic model ✅, vocoder ❌
+- [x] Phase 5c — Root cause diagnosed: acoustic model ✅, internal vocoder ❌
 - [x] Phase 5d — Standalone HiFiGAN vocoder setup and training started (Mar 15, 2026)
-- [ ] **Phase 5e — Vocoder reaches 50k steps → first intelligibility test** ← 🔄 IN PROGRESS
-- [ ] Phase 5f — Vocoder integration finalized (infer.py, duration calibration)
+- [x] Phase 5e — Vocoder confirmed producing correct waveform structure at 25k steps ✅
+- [ ] **Phase 5f — Vocoder reaches 50k steps → intelligibility test** ← 🔄 IN PROGRESS (~27k/100k)
+- [ ] Phase 5g — Vocoder reaches 100k steps → release quality
 - [ ] Phase 6 — Evaluation (MOS, WER via Whisper, RTF on CPU)
 - [ ] Phase 7 — ONNX export (opset 17) + INT8 quantization (target <200MB)
 - [ ] Phase 8 — Android integration (ONNX Runtime)
@@ -320,8 +328,8 @@ tts.synthesize("नमस्ते, मेरा नाम वाणी है�
 
 | Metric | Target | Current |
 |---|---|---|
-| MOS Score | > 3.8 / 5.0 | ~1.8 (pre-vocoder fix) |
-| Word Error Rate (WER) | < 8% | ~85% (unintelligible) |
+| MOS Score | > 3.8 / 5.0 | ~2.0 (vocoder at 27k steps) |
+| Word Error Rate (WER) | < 8% | Not yet measurable |
 | Real-Time Factor (CPU) | < 0.3x | Not yet measured |
 | Model Size (quantized) | < 200 MB | 2.1 GB (unquantized) |
 | Android latency | < 300ms/sec audio | Not yet measured |
