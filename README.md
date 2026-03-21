@@ -129,7 +129,7 @@ Standalone HiFiGAN Vocoder (trained on Hindi audio)
 | upsample_initial_channel | 512 |
 | Batch size | 16 |
 | Target steps | 100,000 |
-| Current step | ~27,000 |
+| Current step | ~69,000 |
 | Current Mel Error | ~0.29 (down from 2.3 at step 0) |
 | Current status | Actively training — waveform structure confirmed correct at 25k steps |
 
@@ -286,7 +286,7 @@ vani-tts/
 
 ## 🚀 Quick Start (after model release)
 
-> ⚠️ Model weights not yet released — vocoder training in progress (~27k/100k steps). Star the repo to get notified.
+> ⚠️ Model weights not yet released — vocoder training in progress (~67K/100k steps). Star the repo to get notified.
 
 ```bash
 pip install vani-tts
@@ -312,7 +312,7 @@ tts.synthesize("नमस्ते, मेरा नाम वाणी है�
 - [x] Phase 5c — Root cause diagnosed: acoustic model ✅, internal vocoder ❌
 - [x] Phase 5d — Standalone HiFiGAN vocoder setup and training started (Mar 15, 2026)
 - [x] Phase 5e — Vocoder confirmed producing correct waveform structure at 25k steps ✅
-- [ ] **Phase 5f — Vocoder reaches 50k steps → intelligibility test** ← 🔄 IN PROGRESS (~27k/100k)
+- [ ] **Phase 5f — Vocoder reaches 50k steps → intelligibility test** ← 🔄 IN PROGRESS (~67K/100k)
 - [ ] Phase 5g — Vocoder reaches 100k steps → release quality
 - [ ] Phase 6 — Evaluation (MOS, WER via Whisper, RTF on CPU)
 - [ ] Phase 7 — ONNX export (opset 17) + INT8 quantization (target <200MB)
@@ -328,7 +328,7 @@ tts.synthesize("नमस्ते, मेरा नाम वाणी है�
 
 | Metric | Target | Current |
 |---|---|---|
-| MOS Score | > 3.8 / 5.0 | ~2.0 (vocoder at 27k steps) |
+| MOS Score | > 3.8 / 5.0 | ~2.0 (vocoder at 67K steps) |
 | Word Error Rate (WER) | < 8% | Not yet measurable |
 | Real-Time Factor (CPU) | < 0.3x | Not yet measured |
 | Model Size (quantized) | < 200 MB | 2.1 GB (unquantized) |
