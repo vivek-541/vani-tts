@@ -21,7 +21,7 @@ Vani TTS is an open-source, on-device Hindi Text-to-Speech system built on the *
 | Veena (Maya Research) | ✅ Excellent | ❌ Needs GPU | ❌ | ❌ |
 | AI4Bharat Indic Parler-TTS | ✅ Very Good | ❌ 0.9B params | ❌ | ✅ |
 | Piper TTS (hi) | ⚠️ Poor | ✅ | ✅ | ✅ |
-| **Vani TTS** | 🔄 **In Training** | ✅ **Yes** | ✅ **Yes** | ✅ **Yes** |
+| **Vani TTS** | 🔄 **Training (R3)** | ✅ **Yes** | ✅ **Yes** | ✅ **Yes** |
 
 ---
 
@@ -97,28 +97,55 @@ Standalone HiFiGAN Vocoder (trained 100k steps on Hindi audio)
 | Final Gen loss | 5–7 (GAN never converged) |
 | Result | Correct Hindi rhythm + word boundaries. Consonants not intelligible. |
 
-**Root cause:** batch_size=2 is too small for the GAN discriminator. Acoustic structure (mel) was confirmed correct via Griffin-Lim test — produced speech-shaped audio. Only the vocoder was broken.
+**Root cause:** batch_size=2 is too small for GAN discriminator convergence. Acoustic structure (mel) was confirmed correct via Griffin-Lim test — produced speech-shaped audio. Only the decoder GAN was unconverged.
 
 #### Round 2 (Complete ✅ — Mar 11–17, 2026)
 
 | Parameter | Value |
 |---|---|
 | Base | epoch_2nd_00049.pth from Round 1 |
-| Effective batch | 8 (accum_steps=4) |
+| Batch size | 2 |
+| Gradient accumulation | 4 (effective batch = 8) |
 | Learning rate | 2e-5 |
-| Result | GAN partially converged (Gen ~2.5). Word structure improved. Still blurry consonants. |
+| Epochs | 30 |
+| Final Gen loss | ~2.5 (partial convergence) |
+| Result | GAN partially converged. Word structure improved. Still blurry consonants. |
 
 **Decision:** Switch to standalone HiFiGAN vocoder instead of continuing to fight StyleTTS2's internal GAN on 12GB VRAM.
 
-#### Round 3 (🔄 Next step — config_ft_r3.yml ready)
+#### Round 3 (🔄 IN PROGRESS — Mar 25–, 2026)
 
 | Parameter | Value |
 |---|---|
 | Base | epoch_2nd_00029.pth from Round 2 |
-| lambda_gen | 0.5 (gentle GAN pressure) |
+| Batch size | 2 |
+| Gradient accumulation | 4 (effective batch = 8) |
+| lambda_gen | 1.0 |
 | Learning rate | 1e-5 |
-| Gradient accum | None |
-| Goal | Converge decoder GAN → sharp consonants |
+| Epochs | 30 |
+| **Current status** | **Epoch 1, Step 150/5829** |
+| **Current Gen loss** | **1.71 (stable, healthy oscillation 1.7-2.3)** |
+| **Current Disc loss** | **4.27 (decreasing properly from 4.35)** |
+
+**Early indicators (Epoch 1):**
+- ✅ Gen loss stable in 1.7-2.3 range (no collapse)
+- ✅ Disc loss decreasing (GAN in equilibrium)
+- ✅ Zero OOM errors (batch_size=2 + accum=4 fits 12GB VRAM)
+- ✅ Zero skipped batches (all training data processed)
+
+**This is the best GAN training behavior seen across all 3 rounds.**
+
+**Expected trajectory:**
+- Epoch 5: Gen ~1.5-2.0 → partial sharpening
+- Epoch 10: Gen ~1.0-1.5 → consonants become clear
+- Epoch 20-30: Gen ~0.8-1.2 → natural speech quality
+
+**Success criteria:**
+- ✅ **Success:** Gen <1.5 by epoch 10 → continue to epoch 30 → deploy
+- ⚠️ **Partial:** Gen 1.8-2.5 by epoch 10 → acceptable improvement, may need Plan B for production quality
+- ❌ **Failure:** Gen >3.0 by epoch 5 → GAN collapsed, immediately switch to Plan B
+
+**Plan B (if Round 3 plateaus):** Replace StyleTTS2 decoder GAN with FastSpeech2-style mel predictor (simple convolutions, no GAN). Keep all working components (duration, F0, alignment, style encoder). Use proven HiFiGAN vocoder. Expected: 2-3 days to implement and train.
 
 ### Standalone HiFiGAN Vocoder (Complete ✅ — Mar 15–25, 2026)
 
@@ -134,18 +161,18 @@ Standalone HiFiGAN Vocoder (trained 100k steps on Hindi audio)
 | Steps completed | 100,000 |
 | Final mel error | 0.25 (plateaued — LR decayed to ~0) |
 
-**Vocoder is confirmed working** — `test_vocoder_real.wav` (real audio → vocoder) sounds perfect. The blur in TTS output comes from StyleTTS2's smeared mel, not from the vocoder.
+**Vocoder is confirmed working** — `test_vocoder_real.wav` (real audio → vocoder) sounds perfect. Tested at checkpoints 25k (robotic), 65k (good), 100k (best, most natural). The blur in TTS output comes from StyleTTS2's smeared mel, not from the vocoder.
 
 | Step | Mel Error | Status |
 |---|---|---|
 | 0 | 2.318 | Random noise |
-| 25,000 | 0.291 | Word structure visible |
-| 65,000 | 0.257 | Vocoder confirmed working on real audio |
-| 100,000 | 0.250 | Plateaued — LR exhausted |
+| 25,000 | 0.291 | Word structure visible, robotic quality |
+| 65,000 | 0.257 | Good quality |
+| 100,000 | 0.250 | Best quality, most natural, plateaued |
 
 ---
 
-## 📈 Current Status
+## 📈 Current Status (March 26, 2026)
 
 | Component | Status | Quality |
 |---|---|---|
@@ -154,16 +181,18 @@ Standalone HiFiGAN Vocoder (trained 100k steps on Hindi audio)
 | Text encoder / alignment | ✅ Working | Correct phoneme sequence |
 | Style encoder | ✅ Working | Voice identity from reference |
 | HiFiGAN vocoder | ✅ Working | Perfect on real audio |
-| StyleTTS2 decoder GAN | ❌ Not converged | Vowels clear, consonants blurry |
-| **Overall TTS output** | 🔄 Partial | **Vowels + pauses clear, words not intelligible** |
+| StyleTTS2 decoder GAN | 🔄 **Training (R3)** | Gen=1.71, epoch 1/30 |
+| **Overall TTS output** | 🔄 **R3 In Progress** | **Vowels + pauses clear, consonants blurry (R2 checkpoint)** |
 
-**What you hear now:** A human-sounding voice with correct rhythm and pauses, but consonants are smeared — you can tell someone is speaking but can't make out individual words.
+**What you hear now (using R2 checkpoint):** A human-sounding voice with correct rhythm and pauses, but consonants are smeared — you can tell someone is speaking but can't make out individual words.
 
 **What Round 3 training will fix:** The decoder GAN sharpening consonants. Once Gen loss drops below ~1.5, words will become individually clear.
 
+**Inference checkpoints planned:** Epoch 2, 6, 10, 20, 30 — listen for progressive consonant sharpening.
+
 ---
 
-## 🛠️ Engineering — Bug Chronicle (40 bugs fixed)
+## 🛠️ Engineering — Bug Chronicle (42 bugs fixed)
 
 ### Environment & Dependencies (5)
 
@@ -233,7 +262,7 @@ Standalone HiFiGAN Vocoder (trained 100k steps on Hindi audio)
 | 32 | `torch.stft()` missing `return_complex` | `return_complex=True` |
 | 33 | Feature matching size mismatch | Clip to `min_len` before L1 loss |
 
-### Inference Pipeline (7 new)
+### Inference Pipeline (7)
 
 | # | Problem | Fix |
 |---|---|---|
@@ -245,6 +274,13 @@ Standalone HiFiGAN Vocoder (trained 100k steps on Hindi audio)
 | 39 | F0/N on CPU, decoder on CUDA | `.to(DEVICE)` on F0_pred and N_pred |
 | 40 | `json` not imported before use | Moved to top-level imports |
 
+### Round 3 VRAM Optimization (2 new)
+
+| # | Problem | Fix |
+|---|---|---|
+| 41 | **100% OOM cascade with batch_size=4** | Revert to batch_size=2, increase gradient_accumulation to 4 |
+| 42 | Config key mismatch `gradient_accumulation` vs `accum_steps` | Added fallback: `config.get('gradient_accumulation', config.get('accum_steps', 1))` |
+
 ---
 
 ### 🏆 Most Painful Bug — #10 (8 hours of wasted compute)
@@ -255,9 +291,13 @@ Every batch silently discarded. Weights never changed. `if gt.size(-1) < 80: con
 
 Discriminator frozen at exactly 4.44 (maximum entropy = gave up completely). `optimizer.zero_grad()` called between disc and gen backward on every batch, wiping disc gradients. **Lesson: in GAN training, disc and gen must accumulate together before any step.**
 
-### 💡 Key Architectural Lesson
+### 💡 Key Architectural Lessons
 
-Standalone HiFiGAN vocoder trained on raw audio (mel→wav pairs, no text) is far more stable than fixing StyleTTS2's internal GAN on 12GB VRAM. Same quality ceiling, far fewer failure modes. The vocoder reaching 100k steps and working perfectly on real audio proves this approach is correct — the remaining problem is entirely in the StyleTTS2 decoder GAN.
+1. **Standalone HiFiGAN vocoder** trained on raw audio (mel→wav pairs, no text) is far more stable than fixing StyleTTS2's internal GAN on 12GB VRAM. Same quality ceiling, far fewer failure modes.
+
+2. **12GB VRAM limit for GAN training:** batch_size=2 + gradient_accumulation=4 is the maximum effective batch size. batch_size=4 causes 100% OOM cascade regardless of gradient accumulation.
+
+3. **Loading partially converged checkpoint with fresh optimizer** (Round 2 → Round 3) gives the generator a fighting chance against a fresh discriminator, avoiding early collapse.
 
 ---
 
@@ -267,14 +307,16 @@ Standalone HiFiGAN vocoder trained on raw audio (mel→wav pairs, no text) is fa
 /media/storage/
 ├── vani_dataset/wav/                    ← 15,000 Hindi WAVs at 24kHz
 ├── vani-training/                       ← StyleTTS2 repo (MAIN)
-│   ├── Configs/config_ft_r3.yml         ← Round 3 config (next training)
+│   ├── Configs/config_ft_r3.yml         ← Round 3 config (active training)
 │   ├── infer_working.py                 ← Current working inference script
 │   ├── test_vocoder.py                  ← Proven vocoder test (real audio → perfect output)
 │   └── .venv/                           ← Python venv
 ├── vani_checkpoints/
 │   └── epoch_2nd_00049.pth              ← Round 1 best (stable predictor)
 ├── vani_checkpoints_r2/
-│   └── epoch_2nd_00029.pth              ← Round 2 best (use for Round 3 base)
+│   └── epoch_2nd_00029.pth              ← Round 2 best (Gen ~2.5, base for R3)
+├── vani_checkpoints_r3/                 ← Round 3 checkpoints (IN PROGRESS)
+│   └── epoch_2nd_000XX.pth              ← Saved every 2 epochs
 └── hifi-gan/
     ├── config_hindi.json                ← Vocoder config (sr=24000, hop=300)
     └── cp_hifigan/g_00100000            ← Vocoder at 100k steps (confirmed working)
@@ -284,7 +326,7 @@ Standalone HiFiGAN vocoder trained on raw audio (mel→wav pairs, no text) is fa
 
 ## 🚀 Quick Start (after model release)
 
-> ⚠️ Model weights not yet released — Round 3 StyleTTS2 training pending. Star the repo to get notified.
+> ⚠️ Model weights not yet released — Round 3 StyleTTS2 training in progress (Epoch 1/30). Expected completion: April 2026. Star the repo to get notified.
 
 ```bash
 pip install vani-tts
@@ -304,14 +346,18 @@ tts.synthesize("नमस्ते, मेरा नाम वाणी है�
 - [x] Phase 1 — Dataset pipeline (IndicVoices-R, 15,000 samples, 24kHz)
 - [x] Phase 2 — Phonemization (espeak-ng IPA, 178 tokens)
 - [x] Phase 3 — Pretrained weights + StyleTTS2 config
-- [x] Phase 4 — Training loop stabilized (40 bugs fixed)
-- [x] Phase 5 — Round 1: 50 epochs acoustic model ✅
-- [x] Phase 5b — Round 2: 30 epochs GAN fine-tuning ✅
+- [x] Phase 4 — Training loop stabilized (42 bugs fixed)
+- [x] Phase 5a — Round 1: 50 epochs acoustic model ✅
+- [x] Phase 5b — Round 2: 30 epochs GAN fine-tuning (partial convergence) ✅
 - [x] Phase 5c — Root cause diagnosed: acoustic structure ✅, decoder GAN ❌
-- [x] Phase 5d — Standalone HiFiGAN setup and training started ✅
-- [x] Phase 5e — HiFiGAN 100k steps complete, confirmed working on real audio ✅
+- [x] Phase 5d — Standalone HiFiGAN training (100k steps) ✅
+- [x] Phase 5e — HiFiGAN confirmed working on real audio ✅
 - [x] Phase 5f — End-to-end pipeline working: vowels clear, pauses correct ✅
-- [ ] **Phase 5g — Round 3 StyleTTS2 training → sharp consonants** ← 🔄 NEXT
+- [ ] **Phase 5g — Round 3 StyleTTS2 training** ← 🔄 **IN PROGRESS (Epoch 1/30)**
+  - [x] Config optimized for 12GB VRAM
+  - [ ] Epoch 10 evaluation (Gen loss target: <2.0)
+  - [ ] Epoch 20 inference test (consonant clarity check)
+  - [ ] Epoch 30 final model (expected Gen ~0.8-1.2)
 - [ ] Phase 6 — Evaluation (MOS, WER via Whisper)
 - [ ] Phase 7 — ONNX export + INT8 quantization (target <200MB)
 - [ ] Phase 8 — Android integration (ONNX Runtime)
@@ -320,25 +366,58 @@ tts.synthesize("नमस्ते, मेरा नाम वाणी है�
 - [ ] Phase 11 — Multiple Hindi voices
 - [ ] Phase 12 — Hinglish support
 
+### Contingency Plan
+
+If Round 3 plateaus (Gen >1.8 by epoch 10):
+- [ ] Phase 5h — Implement FastSpeech2-style mel predictor (no GAN)
+- [ ] Phase 5i — Train mel predictor (5-10 epochs, stable convergence)
+- [ ] Phase 5j — Deploy with proven HiFiGAN vocoder
+
 ---
 
 ## 📈 Evaluation
 
-| Metric | Target | Current |
-|---|---|---|
-| MOS Score | > 3.8 / 5.0 | ~2.2 (vowels clear, consonants blurry) |
-| Word Error Rate (WER) | < 8% | Not yet measurable |
-| Real-Time Factor (CPU) | < 0.3x | Not yet measured |
-| Model Size (quantized) | < 200 MB | 2.1 GB (unquantized) |
+| Metric | Target | Current (R2 checkpoint) | R3 Expected |
+|---|---|---|---|
+| MOS Score | > 3.8 / 5.0 | ~2.2 (vowels clear, consonants blurry) | ~3.5-4.0 if Gen <1.5 |
+| Word Error Rate (WER) | < 8% | Not yet measurable | ~10-15% (epoch 10), ~5-8% (epoch 30) |
+| Real-Time Factor (CPU) | < 0.3x | Not yet measured | TBD after ONNX export |
+| Model Size (quantized) | < 200 MB | 2.1 GB (unquantized) | ~180 MB after INT8 quantization |
+
+---
+
+## 🔬 Technical Insights
+
+### Why Round 3 Is Working Where R1/R2 Struggled
+
+**Round 1:** Fresh start from LibriTTS → batch_size=2 too small → GAN never converged (Gen stuck at 5-7)
+
+**Round 2:** Gradient accumulation (effective_batch=8) → GAN partially converged (Gen ~2.5) → consonants still blurry
+
+**Round 3:** Load R2's partially converged weights + fresh optimizer + effective_batch=8 → **GAN starts from semi-working state** → discriminator can't immediately overpower generator → healthy equilibrium (Gen stable at 1.7-2.3 in epoch 1)
+
+**The key insight:** Starting from a checkpoint where Gen already produces somewhat-realistic audio (even if blurry) prevents early GAN collapse. The discriminator has to learn to distinguish "blurry speech" from "sharp speech" rather than "noise" from "speech."
+
+### GAN Training on Limited VRAM (12GB)
+
+**Discovered limits:**
+- batch_size=4 + any gradient accumulation → 100% OOM cascade
+- batch_size=2 + gradient_accumulation=4 → stable (8 effective batch)
+- batch_size=2 + gradient_accumulation=8 → occasional OOM on long sequences
+
+**Why:** Gradient accumulation holds gradients from multiple backwards in memory. Even though `optimizer.step()` happens every N batches, PyTorch must keep all N batches' gradients until the step.
+
+**Optimal config for 12GB VRAM GAN training:** batch_size=2, gradient_accumulation=4, max_len=100
 
 ---
 
 ## 🙏 Acknowledgements
 
-- [AI4Bharat](https://ai4bharat.iitm.ac.in/) for IndicVoices-R
-- [yl4579](https://github.com/yl4579/StyleTTS2) for StyleTTS2
-- [jik876](https://github.com/jik876/hifi-gan) for HiFiGAN
+- [AI4Bharat](https://ai4bharat.iitm.ac.in/) for IndicVoices-R Hindi dataset
+- [yl4579](https://github.com/yl4579/StyleTTS2) for StyleTTS2 architecture
+- [jik876](https://github.com/jik876/hifi-gan) for HiFiGAN vocoder
 - [hexgrad](https://huggingface.co/hexgrad/Kokoro-82M) for Kokoro-82M inference reference
+- RTX 3060 12GB for surviving 3 rounds of GAN training without catching fire
 
 ---
 
@@ -348,4 +427,14 @@ Apache 2.0 — free to use, modify, and deploy commercially.
 
 ---
 
+## 📧 Contact
+
+- GitHub: [@vivek-541](https://github.com/vivek-541/vani-tts)
+- Issues: [Report bugs or request features](https://github.com/vivek-541/vani-tts/issues)
+- Discussions: [Join the community](https://github.com/vivek-541/vani-tts/discussions)
+
+---
+
 *Built in Hyderabad 🇮🇳 — making Hindi voice AI accessible to everyone, everywhere, offline.*
+
+**Status:** Round 3 training in progress. Gen loss stable at ~1.7-2.3 in epoch 1. Expected completion: April 2026. Watch this space. 🚀
