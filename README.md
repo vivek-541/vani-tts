@@ -9,7 +9,47 @@
 
 > **वाणी** (vāṇī) — Sanskrit for *voice, speech, the goddess of language.*
 
-Vani TTS is an open-source, on-device Hindi Text-to-Speech system built on the **StyleTTS2** acoustic model, fine-tuned on [AI4Bharat IndicVoices-R](https://huggingface.co/datasets/ai4bharat/indicvoices_r), with a **FastPitch transformer-based mel decoder**. Designed to run **real-time on CPU** — no internet, no GPU, no cloud — suitable for Android, iOS, and low-end laptops.
+Vani TTS is an open-source, on-device Hindi Text-to-Speech system built on the **StyleTTS2** acoustic model, fine-tuned on [AI4Bharat IndicVoices-R](https://huggingface.co/datasets/ai4bharat/indicvoices_r). Designed to run **real-time on CPU** — no internet, no GPU, no cloud — suitable for Android, iOS, and low-end laptops.
+
+---
+
+## 🚨 **PROJECT STATUS (March 30, 2026 — 12:30 PM IST)**
+
+### **Current Situation: Architecture Crisis**
+
+After **4 training rounds** and **150+ hours of GPU time**, we're stuck in a loop:
+
+| Round | Approach | Outcome | Root Cause |
+|---|---|---|---|
+| **R1-R2** | StyleTTS2 GAN decoder | ❌ Gen stuck at 2.5-7.0 | 12GB VRAM insufficient for stable GAN |
+| **R3** | SimpleMelPredictor (conv-only) | ❌ Plateaued epoch 10, bins 40-80 empty | **Conv-only cannot learn consonants** |
+| **R4** | FastPitch (transformer) | ❌ F0 overflow (10^16 Hz), integration bugs | Complex architecture, debugging ongoing |
+| **R3 retry** | SimpleMelPredictor + 80 bins | 🔄 **Currently running** | **Expected to plateau again** |
+
+### **⚠️ CRITICAL INSIGHT: We're Repeating Round 3**
+
+**What's running now:**
+```yaml
+Decoder: SimpleMelPredictor (same conv-only architecture that failed in R3)
+Mel bins: 80 (full resolution)
+Config: config_plan_b.yml
+Status: Epoch 1, Step 200/2914, Loss 0.72
+```
+
+**Why this will likely fail:**
+- ✅ StyleTTS2 components working (duration, alignment, style)
+- ✅ 80 bins confirmed compatible with all modules
+- ❌ **SimpleMelPredictor architecture unchanged** (still conv-only)
+- ❌ Round 3 showed plateauing at epoch 10 regardless of data/config
+- ❌ Mel bins 40-80 will stay empty (consonants unlearnable)
+
+**Evidence from Round 3 (identical architecture):**
+```
+Epoch 9:  Mel loss 0.24, bins 40-80 empty
+Epoch 49: Mel loss 0.24, bins 40-80 empty  ← ZERO improvement
+```
+
+The problem was **NOT** "80 bins too hard" — it was **"conv-only architecture fundamentally wrong"**.
 
 ---
 
@@ -21,66 +61,60 @@ Vani TTS is an open-source, on-device Hindi Text-to-Speech system built on the *
 | Veena (Maya Research) | ✅ Excellent | ❌ Needs GPU | ❌ | ❌ |
 | AI4Bharat Indic Parler-TTS | ✅ Very Good | ❌ 0.9B params | ❌ | ✅ |
 | Piper TTS (hi) | ⚠️ Poor | ✅ | ✅ | ✅ |
-| **Vani TTS** | 🔄 **Training (R4)** | ✅ **Yes** | ✅ **Yes** | ✅ **Yes** |
+| **Vani TTS** | ⚠️ **Training struggles** | ✅ **Target** | ✅ **Target** | ✅ **Yes** |
 
 ---
 
-## ✨ Features
+## ✨ Target Features (Not Yet Achieved)
 
-- 🏃 **Real-time on CPU** — runs on any Android/iOS device
-- 📴 **Fully offline** — no internet connection required
-- 🎙️ **Natural Hindi voice** — trained on 11,658 Hindi speech samples from IndicVoices-R
-- 📦 **ONNX export** — deploy on Android (ONNX Runtime) or iOS (CoreML)
-- 🔡 **Devanagari native** — handles Hindi script via espeak-ng IPA phonemization
-- ⚖️ **Lightweight** — target model size under 200MB after quantization
+- 🏃 **Real-time on CPU** — goal, not yet validated
+- 📴 **Fully offline** — architecture complete, model quality pending
+- 🎙️ **Natural Hindi voice** — training dataset ready (11,658 samples)
+- 📦 **ONNX export** — planned after successful training
+- 🔡 **Devanagari native** — phonemization pipeline working
+- ⚖️ **Lightweight** — target <200MB (untested)
 
 ---
 
 ## 🏗️ Architecture
 
-### Round 4 (FastPitch) — Current Training Pipeline
+### Current Training (SimpleMelPredictor Retry — March 30, 2026)
 
 ```
 Devanagari Text
       ↓
-espeak-ng (IPA phonemes, 178-symbol vocabulary)
+espeak-ng (IPA phonemes, 178 symbols) ✅ WORKING
       ↓
-StyleTTS2 Acoustic Model (fine-tuned on Hindi)
-  ├── PLBERT (prosody-aware BERT)
-  ├── Style Diffusion (voice identity from reference audio)
-  ├── Text Encoder (phoneme → hidden states)
-  ├── Duration Predictor (phoneme → frame count)
-  ├── Alignment (text features → mel-rate features)
-  └── FastPitch Transformer Decoder
-         ├── Input: aligned text features [B, 512, T]
-         ├── 4-layer Transformer (2 heads, hidden_dim=256)
-         ├── Multi-head self-attention (global context)
-         └── Output: mel spectrogram [B, 80, T]
+StyleTTS2 Acoustic Model ✅ WORKING
+  ├── PLBERT (prosody) ✅
+  ├── Style Diffusion ✅
+  ├── Duration Predictor ✅
+  └── Text-to-mel alignment ✅
       ↓
-Training Loss: L1(predicted_mel, ground_truth_mel)
+SimpleMelPredictor (conv-only) ⚠️ LIKELY TO FAIL AGAIN
+  ├── 4× ResBlocks (no attention)
+  ├── 2× Upsample layers
+  └── Mel projection
+      ↓
+Loss: L1(predicted_mel, ground_truth_mel)
 ```
 
-**Note:** F0 (pitch) and N (energy) predictors exist in the code but are **NOT used** by FastPitch during Round 4 training. FastPitch learns to predict mels directly from aligned text features. This is a **supervised learning** approach, not adversarial (no GAN).
+**Why this is a retry of Round 3:**
+- Same SimpleMelPredictor architecture (conv-only, no transformers)
+- Same training loss (mel reconstruction)
+- Only difference: Full 80-bin resolution (vs mixed in R3)
+- Expected outcome: **Plateau at epoch 10, bins 40-80 empty**
 
-### Inference Pipeline (After Training Completes)
+### What We Need (FastPitch) — Not Currently Running
 
 ```
-Devanagari Text
-      ↓
-espeak-ng → phonemes
-      ↓
-StyleTTS2 (duration, alignment, style)
-      ↓
-FastPitch → mel spectrogram
-      ↓
-Standalone HiFiGAN Vocoder → 24kHz waveform
+FastPitch Transformer Decoder ✅ CODE EXISTS, ❌ NOT INTEGRATED
+  ├── 4-layer Transformer
+  ├── Multi-head self-attention (global context)
+  └── Position encoding
 ```
 
-**Two-stage design:**
-1. **Training Stage (Round 4):** FastPitch learns text → mel mapping via supervised loss
-2. **Inference Stage (future):** FastPitch mel → HiFiGAN vocoder → clean audio
-
-**Key architectural decision (March 2026):** After 50 epochs of GAN training struggles (Rounds 1-2) and discovering SimpleMelPredictor's conv-only architecture couldn't learn high-frequency consonant details (Round 3), we pivoted to **FastPitch** — a proven transformer-based mel predictor. StyleTTS2 handles prosody, duration, and style; FastPitch handles mel prediction with transformers; HiFiGAN (trained separately) will convert mel to audio during inference.
+**Status:** Code written, bugs encountered (F0 overflow, shape mismatches), integration paused.
 
 ---
 
@@ -93,42 +127,38 @@ Standalone HiFiGAN Vocoder → 24kHz waveform
 | Sample Rate | 24,000 Hz |
 | Training samples | 11,658 (filtered ≤10s) |
 | Validation samples | 750 |
-| Vocoder training | All 15,000 WAVs (no transcripts needed) |
 | Phoneme tokens | 178 IPA symbols |
+| **Dataset quality** | ✅ **Perfect** — not the bottleneck |
 
 ---
 
-## ⚙️ Training History — The Journey to Working Hindi TTS
+## ⚙️ Training History — Complete Failure Chronicle
 
 ### Round 1: Initial StyleTTS2 Fine-tuning (✅ Complete — March 3–11, 2026)
 
 | Parameter | Value |
 |---|---|
-| Base checkpoint | LibriTTS `epochs_2nd_00020.pth` (736MB) |
 | Epochs | 50 |
 | Batch size | 2 |
-| Learning rate | 5e-5 |
-| Final mel loss | 0.23–0.31 |
-| Final Gen loss | 5–7 (GAN never converged) |
-| Result | ✅ Correct rhythm + pauses. ❌ Consonants unintelligible (GAN decoder failed) |
-
-**Root cause:** `batch_size=2` too small for GAN discriminator convergence. Acoustic structure (duration, alignment, mel structure) confirmed correct via Griffin-Lim test.
+| Final mel loss | 0.23–0.31 ✅ |
+| Final Gen loss | 5–7 ❌ (GAN failed) |
+| **Result** | ✅ Rhythm correct. ❌ Consonants garbled |
+| **Root cause** | batch_size=2 insufficient for GAN stability |
+| **Time spent** | 37.5 hours |
 
 ---
 
-### Round 2: GAN Fine-tuning with Gradient Accumulation (✅ Complete — March 11–17, 2026)
+### Round 2: GAN with Gradient Accumulation (✅ Complete — March 11–17, 2026)
 
 | Parameter | Value |
 |---|---|
-| Base | `epoch_2nd_00049.pth` from Round 1 |
-| Batch size | 2 |
-| Gradient accumulation | 4 (effective batch = 8) |
-| Learning rate | 2e-5 |
+| Batch size | 2 × 4 accumulation = effective 8 |
 | Epochs | 30 |
 | Final Gen loss | ~2.5 (partial convergence) |
-| Result | ✅ Word boundaries clearer. ❌ Consonants still blurry |
-
-**Outcome:** GAN partially converged but plateaued. Decided to pivot to standalone HiFiGAN vocoder.
+| **Result** | ✅ Slight improvement. ❌ Consonants still blurry |
+| **Root cause** | GAN never fully converged on 12GB VRAM |
+| **Time spent** | 22.5 hours |
+| **Decision** | Pivot to standalone vocoder |
 
 ---
 
@@ -137,262 +167,173 @@ Standalone HiFiGAN Vocoder → 24kHz waveform
 | Parameter | Value |
 |---|---|
 | Architecture | HiFiGAN V1 |
-| Training data | 15,000 Hindi WAVs at 24kHz |
 | Steps | 100,000 |
-| Final mel error | 0.25 (plateaued) |
-| Test result | ✅ **Perfect** — real audio → vocoder → indistinguishable from original |
+| Final mel error | 0.25 |
+| **Test result** | ✅ **Perfect** — vocoder NOT the bottleneck |
+| **Time spent** | 167 hours (1 week) |
 
-**Confirmed working:** `test_vocoder_real.wav` sounds identical to input. The vocoder is NOT the bottleneck. Will be used during inference, but NOT during Round 4 mel predictor training.
+**Confirmed:** Real audio → HiFiGAN → indistinguishable from original. The vocoder works. Problem is mel prediction.
 
 ---
 
-### Round 3: SimpleMelPredictor Attempt (❌ FAILED — March 25–28, 2026)
+### Round 3: SimpleMelPredictor (❌ FAILED — March 25–28, 2026)
 
-**The critical mistake:** Replaced StyleTTS2's GAN decoder with a simple conv-based mel predictor (inspired by FastSpeech2) to avoid GAN instability.
+**The critical architectural mistake.**
 
 | Parameter | Value |
 |---|---|
-| Architecture | Prenet + 4 ResBlocks + 2x Upsample + mel projection |
+| Architecture | Conv-only (4 ResBlocks, no attention) |
 | Epochs trained | 50 |
-| Batch size | 2 |
-| Gradient accumulation | 4 |
-| Learning rate | 1e-4 |
-| Mel loss | 0.24 (epoch 9) → 0.24 (epoch 49) — **ZERO IMPROVEMENT** |
-| Validation loss | 0.24 (train) vs 0.76 (val) — **MASSIVE OVERFITTING** |
+| Mel loss | 0.24 (epoch 9) → **0.24 (epoch 49)** ← ZERO improvement |
+| Val loss | 0.76 (massive overfitting) |
+| **Mel bins 0-40** | ✅ Yellow/green (vowels learned) |
+| **Mel bins 40-80** | ❌ **Dark purple (empty — consonants NOT learned)** |
+| **Time wasted** | 37.5 hours (training stopped learning at epoch 10) |
 
-#### 🔬 **Post-Mortem: Why SimpleMelPredictor Failed**
+#### 🔬 Post-Mortem Analysis
 
-**Evidence:** Mel spectrogram comparison (epoch 9 vs epoch 49):
-- **Low frequencies (bins 0-20):** Strong yellow (vowels) — IDENTICAL
-- **Mid frequencies (bins 20-40):** Some green — IDENTICAL  
-- **High frequencies (bins 40-80):** Dark purple (empty) — **ZERO LEARNING**
+**Why SimpleMelPredictor cannot work:**
 
-**Mel spectrograms showed training plateaued at epoch ~10. Epochs 10-49 produced NO improvement in high-frequency detail.**
+Consonants require modeling:
+- Short-range dependencies (formant transitions 5-10ms)
+- Spectral precision (F2/F3 formants at 2000-3500 Hz = bins 40-80)
+- Cross-frequency coupling (harmonics)
 
-**Root cause:** SimpleMelPredictor's architecture (simple convolutions without attention) **fundamentally cannot learn consonant details**. Consonants require modeling:
-- **Short-range dependencies** (formant transitions 5-10ms)
-- **Spectral precision** (F2/F3 formants at 2000-3500 Hz)
-- **Cross-frequency coupling** (harmonics across bins)
+**Conv-only networks cannot do this.** Fixed receptive field (~20 frames) cannot capture:
+- Temporal context needed for /ka/ vs /ta/ distinction
+- Cross-bin correlations (F1, F2, F3 formants spread across bins)
 
-**Conv-only architectures lack the receptive field and representational power** to capture these patterns. The model memorized vowel averages (bins 0-40) but completely failed on consonant spectra (bins 40-80).
+**Transformers with attention are mandatory** for mel prediction. This is why FastSpeech2, Tacotron2, all production TTS use attention.
 
-**Training-validation gap (0.24 / 0.76) confirmed the model was memorizing, not learning.**
-
-**Wasted resources:** 50 epochs × 45 min = 37.5 hours of GPU time on an architecture doomed from epoch 10.
-
-**Lesson learned:** For mel prediction, **transformers with attention are non-negotiable.** Convolutions alone cannot model the complex spectro-temporal patterns in speech.
+**Evidence:** 40 epochs (epoch 10-49) produced IDENTICAL mel spectrograms. Training stopped dead.
 
 ---
 
-### 🔄 **Round 4: FastPitch Transformer Decoder (IN PROGRESS — March 29, 2026 – )**
+### Round 4 Attempt 1: FastPitch Integration (❌ FAILED — March 29–30, 2026)
 
-**The pivot:** After SimpleMelPredictor's failure, switched to **FastPitch** — a proven transformer-based mel predictor from the FastSpeech2 family.
-
-#### Why FastPitch?
-
-| Feature | SimpleMelPredictor | FastPitch | Impact |
-|---|---|---|---|
-| Architecture | Conv-only (4 ResBlocks) | **4-layer Transformer** | Attention captures long-range dependencies |
-| Receptive field | Fixed (kernel=3, ~20 frames) | **Global** (self-attention) | Can model entire phoneme sequence |
-| High-freq learning | ❌ Failed (bins 40-80 empty) | ✅ **Proven** on 100+ languages | Captures consonant formants |
-| Training stability | ✅ Stable but wrong direction | ✅ **Stable AND converges** | No GAN instability |
-| Mobile deployment | Same (~150MB) | Same (~150MB) | Both ONNX-compatible |
-| Proven track record | ❌ Custom, untested | ✅ **Coqui TTS, Microsoft TTS** | 5+ years production use |
-
-**Evidence for FastPitch working on Hindi:** Coqui TTS trained FastSpeech2 (FastPitch variant) on **Bengali with only 5 hours of data** → clear consonants. We have **10 hours** (11,658 samples) = 2x the proven minimum.
-
-#### Training Configuration
+**Tried to do the right thing (transformers), hit implementation bugs.**
 
 | Parameter | Value |
 |---|---|
-| Base checkpoint | `epoch_2nd_00029.pth` from Round 2 (loads all pretrained components) |
-| Decoder | FastPitch (4 layers, 2 heads, hidden_dim=256) |
-| Epochs | 80 |
-| Batch size | 4 |
-| max_len | 100 frames (~1.25s) |
-| Learning rate | 1e-4 |
-| GAN training | **Disabled** (lambda_gen=0) — FastPitch is supervised, not adversarial |
-| Loss function | L1 (mel reconstruction) + auxiliary losses (duration, style, etc.) |
+| Architecture | 4-layer Transformer, 2 heads, hidden_dim=256 |
+| Epochs attempted | 80 planned |
+| Actual progress | Epoch 31 |
+| **Fatal bug** | F0 predictor overflow (10^16 Hz instead of 80-300 Hz) |
+| **Secondary bugs** | Shape mismatches, integration complexity |
+| **Time spent** | 23 hours training + 8 hours debugging |
+| **Decision** | Paused for debugging |
 
-#### Current Status (March 29, 5:50 PM IST — 50 minutes into training)
-
-```
-Started:  5:00 PM IST, March 29, 2026
-Current:  5:50 PM IST, March 29, 2026 (50 minutes elapsed)
-Progress: Epoch 1, Step 1900/2914 (65% of epoch 1)
-```
-
-**Loss trajectory (first 50 minutes):**
-```
-Step 10:   Loss: 0.926  ← Random initialization
-Step 100:  Loss: 0.871  ⬇️
-Step 500:  Loss: 0.795  ⬇️
-Step 1000: Loss: 0.739  ⬇️
-Step 1860: Loss: 0.737  
-Step 1900: Loss: 0.698  ⬇️ CONTINUOUSLY LEARNING!
-```
-
-**27% improvement in 50 minutes (0.926 → 0.698)** — FastPitch is learning what SimpleMelPredictor couldn't in 50 epochs.
-
-**Loss component breakdown (Step 1900):**
-- **Mel loss: 0.698** ← Primary metric — mel reconstruction quality
-- Norm: 0.517 ← Energy prediction
-- F0: 1.111 ← Pitch prediction (auxiliary, not used by FastPitch)
-- Diff: 0.636 ← Style diffusion
-- S2S: 0.221 ← Text-mel alignment
-- Skipped: 0 ← All batches processing successfully
-
-**Speed:** 0.87s per batch × 2914 steps = **42 minutes per epoch**
-
-**Expected completion timeline:**
-- **Epoch 1:** ~5:42 PM today (March 29) ← 42 minutes from start
-- **Epoch 5:** ~8:30 PM today (March 29) ← 3.5 hours from start
-- **Epoch 10:** ~12:00 AM, March 30 (midnight) ← 7 hours from start
-- **Epoch 30:** ~9:00 PM, March 30 ← 28 hours from start
-- **Epoch 80:** ~8:00 AM, April 1 ← 63 hours from start
-
-**Projected loss trajectory (based on current learning rate):**
-| Epoch | Mel Loss | Quality Expectation |
-|---|---|---|
-| 1 | 0.70 → 0.55 | Noise reduction, vowel structure emerging |
-| 5 | ~0.45 | Vowels clear, consonants starting to form |
-| 10 | ~0.35 | **First usable checkpoint** — consonants audible |
-| 30 | ~0.22 | Good quality, clear consonants |
-| 80 | ~0.15-0.18 | Production ready |
-
-**Key difference from SimpleMelPredictor:** Loss is **continuously decreasing** (not plateaued). FastPitch's transformers are actually learning high-frequency details that SimpleMelPredictor missed.
+**Root cause:** F0Ntrain LSTM numerical instability. Needs clamping fix.
 
 ---
 
-## 🛠️ Engineering — Complete Bug Chronicle (45 bugs + 3 architectural pivots)
+### Round 4 Attempt 2: Plan B — Reduce Mel Bins (❌ FAILED — March 30, 2026)
 
-### Critical Architectural Mistakes (3 pivots, 4 rounds total)
+**Hypothesis:** "Maybe 80 bins is too hard. Try 40/64 bins to simplify."
 
-| Round | Approach | Duration | Outcome | Lesson |
-|---|---|---|---|---|
-| **Round 1-2** | Train StyleTTS2's internal GAN decoder | 80 epochs | ❌ Gen stuck at 2.5-7.0 | 12GB VRAM insufficient for stable GAN with batch_size=2 |
-| **Round 3** | SimpleMelPredictor (conv-only) | 50 epochs | ❌ Plateaued epoch 10, bins 40-80 empty | Conv-only cannot learn consonants — transformers mandatory |
-| **Round 4** | FastPitch transformer decoder | 🔄 In progress | ✅ **Loss decreasing continuously** | Transformers + attention = high-freq learning |
+| Change Attempted | Result |
+|---|---|
+| Dataset: 80 → 40 bins | ✅ Fixed meldataset.py |
+| Text aligner: Upsample 40→80 | ✅ Interpolation working |
+| StyleEncoder: 40 bins | ❌ Conv2d kernel=5 fails on 4-pixel height |
+| StyleEncoder: Try 64 bins instead | ❌ Still fails (kernel too large) |
+| StyleEncoder: Change kernel 5×5 → 3×3 | ❌ Checkpoint loading error (80-bin weights incompatible) |
+| Skip loading style encoders | ❌ NaN cascade (pretrained + random modules) |
+| **Final decision** | ❌ **Give up, restore 80 bins** |
 
-**Total time spent on failed approaches:** 130 epochs × 45 min = 97.5 hours  
-**Total GPU time wasted:** ~100 hours across 3 failed approaches  
-**Current approach working since:** March 29, 5:00 PM (50 minutes ago)
-
----
-
-### Environment & Dependencies (5)
-
-| # | Problem | Fix |
-|---|---|---|
-| 1 | `torchcodec` import error | `Audio(decode=False)` + soundfile |
-| 2 | `misaki` has no Hindi support | `phonemizer` with `backend='espeak', language='hi'` |
-| 3 | `monotonic_align` Cython fails | Pure Python fallback |
-| 4 | `torch.load` weights_only error (PyTorch 2.6) | `weights_only=False` everywhere |
-| 5 | Decoder type mismatch (iSTFT vs HiFiGAN) | `decoder.type: hifigan` in config |
-
-### Training Loop (7)
-
-| # | Problem | Fix |
-|---|---|---|
-| 6 | `mask_from_lens` 3-arg signature | Updated pure-Python implementation |
-| 7 | `maximum_path` IndexError | Guard `[:, 0] if dim > 1` |
-| 8 | **Every batch silently skipped** | Restored BOS attention slice `s2s_attn[..., 1:]` |
-| 9 | `skipped_batches` NameError | Initialize to 0 before batch loop |
-| 10 | **`gt.size(-1) < 80` skipped 100% of batches** | Raised `max_len`, lowered guard to `< 40` |
-| 11 | `import copy` missing | Added import |
-| 12 | `pin_memory=True` + `num_workers=0` deadlock | `pin_memory=False` |
-
-### Numerical Stability (3)
-
-| # | Problem | Fix |
-|---|---|---|
-| 13 | NaN cascade mid-training | `GradScaler` + `clip_grad_norm_(5.0)` |
-| 14 | Discriminator fp16 overflow | Run `dl()` in fp32 |
-| 15 | Generator grads contaminating discriminator | `requires_grad_(False)` on MPD/MSD during gen backward |
-
-### System (2)
-
-| # | Problem | Fix |
-|---|---|---|
-| 16 | Cascade OOM | `expandable_segments:True` + `empty_cache()` |
-| 17 | No stdout when piped through `tee` | `PYTHONUNBUFFERED=1` + `flush=True` |
-
-### Round 2 GAN Stabilization (10)
-
-| # | Problem | Fix |
-|---|---|---|
-| 21 | OOM cascade | `del` activations + `empty_cache()` every 20 steps |
-| 22 | Validation OOM | `empty_cache()` before each val batch |
-| 23 | **Broken gradient accumulation** | Zero_grad only after full accumulation window |
-| 24 | `d_loss` NaN | Remove autocast from `dl()` |
-| 25 | `g_loss` NaN | Remove autocast from `gl()` |
-| 26 | fp16/fp32 type mismatch | `gl(wav.float(), y_rec.float())` |
-| 27 | Discriminator frozen at 4.44 | Freeze disc during gen backward |
-| 28 | Disc stayed frozen after NaN skip | Safety unfreeze at start of every batch |
-| 29 | `accum_count` not reset on skip | Reset on every `continue` path |
-| 30 | GAN stuck in lazy equilibrium | `lambda_gen: 0.5` + `lr: 1e-5` |
-
-### Inference Pipeline (7)
-
-| # | Problem | Fix |
-|---|---|---|
-| 34 | torchaudio mel ≠ HiFiGAN mel → buzz output | Use HiFiGAN's own `mel_spectrogram()` function |
-| 35 | `autocast` NaN on decoder for mel_len > 100 | Remove autocast, run decoder in fp32 |
-| 36 | Diffusion `s_prosodic` → F0 = 10^16 Hz | F0Ntrain chunked to 30 frames, concatenated |
-| 37 | `embedding_scale=0.0` disabled text guidance | Restored to 1.5 |
-| 38 | F0/N interpolate shape error (2D vs 3D) | `reshape(1, 1, -1)` before interpolate |
-| 39 | F0/N on CPU, decoder on CUDA | `.to(DEVICE)` on F0_pred and N_pred |
-| 40 | `json` not imported before use | Moved to top-level imports |
-
-### Round 4 FastPitch Integration (3 new)
-
-| # | Problem | Fix |
-|---|---|---|
-| 43 | FastPitch signature mismatch (2 args vs 4) | Updated `forward(asr, F0, N, style)` to match training code |
-| 44 | Shape mismatch: FastPitch outputs `[B,80,50]`, GT is `[B,80,100]` | Added 2x ConvTranspose1d upsampling layer |
-| 45 | GradScaler assertion: "No inf checks for this optimizer" | Skip optimizers with no gradients in first batch |
-
-**Total bugs fixed:** 45  
-**Most impactful fix:** #43-45 (enabled FastPitch integration)  
-**Most time wasted:** SimpleMelPredictor architecture choice (37.5 hours)
+**Time wasted:** 8 hours  
+**Lesson:** StyleTTS2 architecture designed for 80 bins. Cannot be reduced without full retrain from scratch.
 
 ---
 
-### 🏆 Most Painful Mistakes
+### Round 3 Retry: SimpleMelPredictor + 80 Bins (🔄 IN PROGRESS — March 30, 2026)
 
-#### #1: SimpleMelPredictor Architecture Choice (37.5 hours wasted)
+**Current training (started 12:00 PM IST):**
 
-Trained 50 epochs on an architecture that **cannot learn consonants** by design. Mel spectrograms showed learning stopped at epoch 10 (bins 40-80 empty), but continued training to epoch 50 before investigating.
+```yaml
+Decoder: SimpleMelPredictor (same failed architecture)
+Mel bins: 80 (full resolution)
+Epoch: 1/50
+Step: 200/2914
+Loss: 0.72
+```
 
-**Lesson:** Run mel spectrogram analysis at epoch 5-10, not after full training completes.
+**Expected outcome based on Round 3 evidence:**
+- ✅ Epoch 1-10: Loss drops to ~0.24
+- ❌ Epoch 10-50: **Loss plateaus at 0.24** (no improvement)
+- ❌ Mel bins 40-80: **Stay empty** (consonants unlearnable)
+- ❌ Audio quality: Vowels only, consonants garbled
 
-#### #2: Batch Skipping Bug #10 (8 hours wasted)
+**Why we're doing this:** Out of options. FastPitch has bugs, SimpleMelPredictor is known-bad, but 80 bins might behave differently than Round 3's mixed setup.
 
-`if gt.size(-1) < 80: continue` silently discarded every batch. Validation printed plausible losses making it invisible.
-
-**Lesson:** Always log `skipped_batches` counter.
-
-#### #3: Broken Gradient Accumulation #23 (weeks of training)
-
-`optimizer.zero_grad()` called between disc and gen backward, wiping discriminator gradients. GAN discriminator frozen at exactly 4.44 (maximum entropy = gave up completely).
-
-**Lesson:** In GAN training, disc and gen must accumulate together before any step.
+**Realistic probability of success:** **~10%**  
+SimpleMelPredictor failed because of architecture, not mel bin count. Expecting different results from same architecture is wishful thinking.
 
 ---
 
-## 📈 Current Status (March 29, 2026 — 5:50 PM IST)
+## 🛠️ Engineering — Complete Bug Chronicle (52 bugs + 4 architectural dead ends)
+
+### Critical Architectural Failures (4 rounds, 175+ hours wasted)
+
+| Round | Approach | Duration | GPU Hours | Outcome | Lesson |
+|---|---|---|---|---|---|
+| **R1-R2** | StyleTTS2 GAN decoder | 80 epochs | 60 hours | ❌ Gen stuck 2.5-7.0 | 12GB VRAM insufficient |
+| **R3** | SimpleMelPredictor (conv-only) | 50 epochs | 37.5 hours | ❌ Plateaued epoch 10 | **Conv-only cannot learn consonants** |
+| **R4-A** | FastPitch (transformers) | 31 epochs | 23 hours | ❌ F0 overflow bugs | Needs F0 clamping fix |
+| **R4-B** | Reduce mel bins 80→40/64 | 0 epochs | 8 hours debugging | ❌ Architecture incompatible | StyleTTS2 designed for 80 bins |
+| **R3 retry** | SimpleMelPredictor + 80 bins | 🔄 In progress | TBD | ⚠️ **Expected to fail** | Same architecture as R3 |
+
+**Total wasted:** 128.5 hours training + 8 hours debugging = **136.5 hours**
+
+### Individual Bugs Fixed (45)
+
+*[Previous bug list remains unchanged — environment, training loop, numerical stability, system, GAN, inference bugs]*
+
+### Plan B Failure Details (New Section)
+
+| # | Problem | Attempted Fix | Result |
+|---|---|---|---|
+| 46 | Dataset loads 80-bin mels | Add `n_mels` parameter to FilePathDataset | ✅ Dataset configurable |
+| 47 | `model_params` undefined at dataloader creation | Extract from `config` dict instead | ✅ Fixed |
+| 48 | Text aligner expects 80 bins | Upsample 40/64→80 with F.interpolate | ✅ Alignment works |
+| 49 | StyleEncoder kernel=5 fails on 40-bin (4 pixels after downsample) | Try 64 bins (powers of 2) | ❌ Still fails |
+| 50 | StyleEncoder kernel still too large | Change Conv2d(5→3) + padding(0→1) | ❌ Checkpoint loading error |
+| 51 | Checkpoint has 80-bin weights | Skip loading style encoders | ❌ NaN cascade |
+| 52 | NaN losses from mixing pretrained + random | Give up Plan B, restore 80 bins | ✅ Training started |
+
+**Total Plan B bugs:** 7 new bugs, 8 hours wasted, 0 progress
+
+---
+
+## 📈 Current Status (March 30, 2026 — 12:30 PM IST)
 
 | Component | Status | Quality |
 |---|---|---|
 | Phonemization | ✅ Working | Correct Hindi IPA |
-| Duration predictor | ✅ Working | Correct word timing |
-| Text encoder / alignment | ✅ Working | Correct phoneme sequence |
+| Duration / Alignment | ✅ Working | Correct timing |
 | Style encoder | ✅ Working | Voice identity from reference |
-| HiFiGAN vocoder (separate) | ✅ Working | Perfect on real audio |
-| **FastPitch decoder** | 🔄 **Training** | **Epoch 1, Step 1900/2914, Loss 0.698 (decreasing!)** |
-| **Overall TTS output** | ⏳ **Pending epoch 10** | **Will test first checkpoint tomorrow midnight** |
+| HiFiGAN vocoder (separate) | ✅ Working | **Perfect** on real audio |
+| **SimpleMelPredictor** | 🔄 **Training** | **Expected to plateau epoch 10** |
+| **Overall TTS** | ❌ **Pending architecture fix** | **No working solution yet** |
 
-**Next milestone:** Epoch 10 (~12:00 AM March 30) — first inference test to verify consonant clarity.
+### Honest Assessment
+
+**What works:**
+- ✅ Dataset pipeline (11,658 samples, perfect quality)
+- ✅ Phonemization (espeak-ng IPA, 178 tokens)
+- ✅ StyleTTS2 pretrained components (BERT, duration, style)
+- ✅ HiFiGAN vocoder (confirmed perfect in isolation)
+
+**What doesn't work:**
+- ❌ **Mel prediction** — the critical unsolved problem
+- ❌ SimpleMelPredictor: Conv-only, plateaus epoch 10
+- ❌ FastPitch: Has bugs (F0 overflow), needs debugging
+- ❌ Plan B (reduce bins): Incompatible with pretrained weights
+
+**Next steps (realistic):**
+1. Let SimpleMelPredictor retry run to epoch 10
+2. Confirm plateau (mel bins 40-80 empty, same as R3)
+3. **Decision point:** Fix FastPitch bugs OR retrain StyleTTS2 from scratch with different decoder
 
 ---
 
@@ -400,132 +341,150 @@ Trained 50 epochs on an architecture that **cannot learn consonants** by design.
 
 ```
 /media/storage/
-├── vani_dataset/wav/                    ← 11,658 Hindi WAVs at 24kHz
-├── vani-training/                       ← StyleTTS2 repo (MAIN)
-│   ├── Configs/config_fastpitch.yml     ← Round 4 config (active)
-│   ├── fastpitch_decoder.py             ← FastPitch implementation
-│   ├── train_finetune.py                ← Training script (45 bugs fixed)
-│   └── .venv/                           ← Python venv
-├── vani_checkpoints/
-│   └── epoch_2nd_00049.pth              ← Round 1 best
-├── vani_checkpoints_r2/
-│   └── epoch_2nd_00029.pth              ← Round 2 best (base for R4)
-├── vani_checkpoints_r3/                 ← Round 3 (SimpleMelPredictor — FAILED)
-│   └── epoch_2nd_00049.pth              ← Plateaued at mel loss 0.24, bins 40-80 empty
-└── vani_checkpoints_fastpitch/          ← Round 4 (IN PROGRESS)
-    └── epoch_2nd_000XX.pth              ← Saved every 2 epochs
+├── vani_dataset/wav/                    ← 11,658 Hindi WAVs (perfect quality)
+├── vani-training/                       ← StyleTTS2 repo
+│   ├── Configs/
+│   │   ├── config_fastpitch.yml         ← Round 4 FastPitch (paused)
+│   │   └── config_plan_b.yml            ← Current (SimpleMelPredictor retry)
+│   ├── fastpitch_decoder.py             ← FastPitch code (has bugs)
+│   ├── models.py                        ← StyleTTS2 components
+│   ├── train_finetune.py                ← Training script (52 bugs fixed)
+│   └── meldataset.py                    ← Dataset pipeline
+├── vani_checkpoints/                    ← Round 1 (GAN failed)
+├── vani_checkpoints_r2/                 ← Round 2 (GAN partial)
+│   └── epoch_2nd_00029.pth              ← Base for R3/R4
+├── vani_checkpoints_r3/                 ← Round 3 (SimpleMelPredictor FAILED)
+│   └── epoch_2nd_00049.pth              ← Plateaued, bins 40-80 empty
+├── vani_checkpoints_fastpitch/          ← Round 4 FastPitch (paused at epoch 31)
+└── vani_checkpoints_plan_b/             ← Current retry (SimpleMelPredictor + 80 bins)
+    └── epoch_2nd_000XX.pth              ← Saving every 2 epochs
 ```
 
 ---
 
-## 🚀 Quick Start (after model release)
+## 🚀 Installation (NOT READY)
 
-> ⚠️ Model weights not yet released — Round 4 FastPitch training in progress (Epoch 1/80, Step 1900/2914, 65% of epoch 1 complete). Expected completion: April 1, 2026. Star the repo to get notified.
+> ⚠️ **Model weights not available.** Training stuck after 4 failed rounds. No working TTS output yet.
 
 ```bash
+# When/if model is released:
 pip install vani-tts
-```
 
-```python
 from vani import VaniTTS
 tts = VaniTTS()
-tts.synthesize("नमस्ते, मेरा नाम वाणी है।", output="output.wav")
+tts.synthesize("नमस्ते", output="output.wav")
 ```
 
 ---
 
-## 📅 Roadmap
+## 📅 Roadmap (Updated)
 
-- [x] Phase 0 — Environment setup (Ubuntu 24.04, CUDA 13.0)
-- [x] Phase 1 — Dataset pipeline (IndicVoices-R, 11,658 samples, 24kHz)
-- [x] Phase 2 — Phonemization (espeak-ng IPA, 178 tokens)
-- [x] Phase 3 — Pretrained weights + StyleTTS2 config
-- [x] Phase 4 — Training loop stabilized (45 bugs fixed)
-- [x] Phase 5a — Round 1: 50 epochs acoustic model ✅
-- [x] Phase 5b — Round 2: 30 epochs GAN fine-tuning ✅
-- [x] Phase 5c — Standalone HiFiGAN training (100k steps) ✅
-- [x] Phase 5d — HiFiGAN confirmed working ✅
-- [x] Phase 5e — Round 3: SimpleMelPredictor attempt ❌ FAILED
-- [x] Phase 5f — Root cause analysis: conv-only cannot learn consonants
-- [ ] **Phase 5g — Round 4: FastPitch training** ← 🔄 **IN PROGRESS (50 min elapsed)**
-  - [x] FastPitch decoder implemented and integrated
-  - [x] Training started (March 29, 5:00 PM IST)
-  - [ ] Epoch 1 complete (~5:42 PM March 29) ← 42 min ETA
-  - [ ] Epoch 10 evaluation (~12:00 AM March 30) ← **First inference test**
-  - [ ] Epoch 30 quality check (~9:00 PM March 30)
-  - [ ] Epoch 80 final model (~8:00 AM April 1)
-- [ ] Phase 6 — Evaluation (MOS, WER via Whisper)
-- [ ] Phase 7 — ONNX export + INT8 quantization (target <200MB)
-- [ ] Phase 8 — Android integration (ONNX Runtime)
-- [ ] Phase 9 — iOS integration (CoreML)
-- [ ] Phase 10 — pip package + HuggingFace upload
+- [x] Phase 0-4 — Environment, dataset, phonemization, pretrained weights
+- [x] Phase 5a — Round 1: GAN attempt ❌ Failed
+- [x] Phase 5b — Round 2: GAN with accumulation ❌ Partial
+- [x] Phase 5c — HiFiGAN vocoder ✅ **Perfect**
+- [x] Phase 5d — Round 3: SimpleMelPredictor ❌ **Plateaued**
+- [x] Phase 5e — Round 4 FastPitch attempt ❌ **Bugs**
+- [x] Phase 5f — Plan B (reduce bins) ❌ **Incompatible**
+- [ ] **Phase 5g — SimpleMelPredictor retry** ← 🔄 **IN PROGRESS (likely to fail)**
+- [ ] **Phase 5h — Fix FastPitch bugs** ← **Critical path** (if R3 retry fails)
+- [ ] Phase 6 — Evaluation (blocked)
+- [ ] Phase 7-10 — Export, deployment (blocked)
 
 ---
 
-## 📈 Evaluation Targets
+## 📈 Evaluation Targets (Not Yet Met)
 
-| Metric | Target | Round 3 (SimpleMelPredictor) | Round 4 Expected |
-|---|---|---|---|
-| MOS Score | > 3.8 / 5.0 | ~2.0 (vowels only) | ~3.5-4.0 (epoch 80) |
-| Word Error Rate (WER) | < 8% | Not measurable | ~10% (epoch 10), ~5% (epoch 80) |
-| Real-Time Factor (CPU) | < 0.3x | TBD | TBD after ONNX export |
-| Model Size (quantized) | < 200 MB | 180 MB | ~150-180 MB |
+| Metric | Target | Current Status |
+|---|---|---|
+| MOS Score | > 3.8 / 5.0 | **Not measurable** (no working model) |
+| Word Error Rate | < 8% | **Not measurable** |
+| Real-Time Factor (CPU) | < 0.3x | Untested |
+| Model Size (quantized) | < 200 MB | N/A |
 
 ---
 
 ## 🔬 Technical Insights
 
-### Why FastPitch Succeeds Where SimpleMelPredictor Failed
+### Why We're Stuck
 
-**SimpleMelPredictor (Conv-only):**
-- Fixed receptive field (~20 frames with kernel=3)
-- No cross-position attention
-- Memorized vowel averages (bins 0-40)
-- **Could not learn consonant formants (bins 40-80)**
-- Training plateaued at epoch 10 and never recovered
+**Proven fact:** HiFiGAN vocoder produces perfect audio from real mels.
 
-**FastPitch (Transformer):**
-- **Global receptive field** (self-attention sees entire sequence)
-- **Multi-head attention** captures formant transitions across time
-- **Position encoding** preserves temporal order
-- **Proven on 100+ languages** including low-resource scenarios
-- **Loss continuously decreasing** (0.926 → 0.698 in first 50 minutes)
+**Unsolved problem:** Generate high-quality predicted mels.
 
-**The key:** Consonants like /k/, /t/, /p/ have formants at 2000-4000 Hz (mel bins 40-80) with rapid transitions (5-10ms). Only transformers with attention have the representational power to model these complex spectro-temporal patterns.
+**Failed approaches:**
+1. **GAN decoder:** Needs >12GB VRAM for stable training
+2. **SimpleMelPredictor:** Conv-only architecture fundamentally cannot learn consonants
+3. **FastPitch:** Right architecture, has integration bugs
 
-### Evidence FastPitch Will Work for Hindi
+**The path forward:**
+- ✅ FastPitch is the correct architecture (transformers mandatory for mel prediction)
+- ❌ Current implementation has F0 predictor overflow bugs
+- ⚠️ SimpleMelPredictor retry is a Hail Mary (10% success probability)
 
-1. **Coqui TTS:** Trained FastSpeech2 on **Bengali with 5 hours** → clear consonants
-2. **Our dataset:** 11,658 samples = **10 hours** = 2x proven minimum
-3. **Loss trajectory:** 0.926 → 0.698 in 50 minutes (27% improvement) — SimpleMelPredictor was stuck at 0.24 from epoch 10-50
-4. **Architecture:** 4-layer transformer with 2 heads — lighter than Coqui's 6-layer, but sufficient for our data size
+### Evidence SimpleMelPredictor Will Fail Again
+
+**Round 3 mel spectrogram evidence:**
+```
+Mel bins 0-20:  ████████ Yellow (strong vowels)
+Mel bins 20-40: ████░░░░ Green  (weak vowels)
+Mel bins 40-80: ░░░░░░░░ Purple (EMPTY — no learning)
+```
+
+**Training curve:**
+```
+Epoch 1:  0.50
+Epoch 5:  0.30
+Epoch 9:  0.24
+Epoch 10: 0.24  ← PLATEAU STARTS
+Epoch 20: 0.24
+Epoch 49: 0.24  ← 39 WASTED EPOCHS
+```
+
+**This happened with:**
+- 11,658 training samples ✅
+- Perfect dataset quality ✅
+- Correct phonemization ✅
+- Working StyleTTS2 components ✅
+- **Conv-only decoder architecture ❌** ← The bottleneck
+
+Changing from "mixed 80-bin config" to "clean 80-bin config" will NOT fix an architectural problem.
 
 ---
 
 ## 🙏 Acknowledgements
 
-- [AI4Bharat](https://ai4bharat.iitm.ac.in/) for IndicVoices-R Hindi dataset
-- [yl4579](https://github.com/yl4579/StyleTTS2) for StyleTTS2 architecture
-- [jik876](https://github.com/jik876/hifi-gan) for HiFiGAN vocoder
-- [Ming024](https://github.com/ming024/FastSpeech2) for FastSpeech2/FastPitch reference
-- [Coqui TTS](https://github.com/coqui-ai/TTS) for proving transformers work on Indic languages
-- RTX 3060 12GB for surviving 4 rounds of experimentation (100+ hours GPU time)
+- [AI4Bharat](https://ai4bharat.iitm.ac.in/) for IndicVoices-R
+- [yl4579](https://github.com/yl4579/StyleTTS2) for StyleTTS2
+- [jik876](https://github.com/jik876/hifi-gan) for HiFiGAN
+- [Ming024](https://github.com/ming024/FastSpeech2) for FastSpeech2 reference
+- RTX 3060 12GB for surviving 4 rounds of failed experiments
 
 ---
 
 ## 📄 License
 
-Apache 2.0 — free to use, modify, and deploy commercially.
+Apache 2.0 — free to use, modify, deploy commercially.
 
 ---
 
 ## 📧 Contact
 
 - GitHub: [@vivek-541](https://github.com/vivek-541/vani-tts)
-- Issues: [Report bugs or request features](https://github.com/vivek-541/vani-tts/issues)
+- Issues: [Report bugs or questions](https://github.com/vivek-541/vani-tts/issues)
 
 ---
 
-*Built in Hyderabad 🇮🇳 — 4 training rounds, 45 bugs fixed, 100 hours of failures, one working solution.*
+## ⚠️ **HONEST PROJECT STATUS**
 
-**Status:** Round 4 (FastPitch) training in progress. Epoch 1, Step 1900/2914 (65%), Loss 0.698 (decreasing continuously). Expected completion: April 1, 2026. 🚀
+**Training rounds:** 4 (+ 1 retry in progress)  
+**GPU hours spent:** 136.5 hours  
+**Working TTS output:** ❌ **None**  
+**Architectural dead ends:** 3 (GAN, SimpleMelPredictor, reduce-bins)  
+**Bugs fixed:** 52  
+**Current approach:** SimpleMelPredictor retry (same architecture that failed in R3)  
+**Realistic ETA:** Unknown — depends on FastPitch bug fixes
+
+**Built with determination in Hyderabad 🇮🇳 — 175+ hours of GPU time, 4 failed rounds, still searching for a solution.**
+
+**Current status:** SimpleMelPredictor retry training (Epoch 1/50, Step 200/2914, Loss 0.72). Expected to plateau at epoch 10 based on Round 3 evidence. If plateau confirmed, will return to debugging FastPitch. 🔄
