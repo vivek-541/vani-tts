@@ -216,3 +216,5 @@ Models/
 Utils/ASR/epoch_00080.pth
 Utils/PLBERT/
 Utils/JDC/
+vani-en/
+Miniforge3-Linux-x86_64.sh
