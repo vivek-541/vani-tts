@@ -1,3 +1,6 @@
+<<<<<<< HEAD
+# Vani TTS Production
+=======
 # वाणी (Vani) TTS 🎙️
 ### Lightweight Hindi Text-to-Speech for Consumer Devices
 
@@ -870,3 +873,4 @@ Apache 2.0 — free to use, modify, and deploy commercially.
 *R&D phase: 287.5 GPU hours exploring architectures. Production phase: VITS training (next). Every ML breakthrough starts with failed experiments.*
 
 **Current status (April 2, 2026):** R&D complete. Architecture selected. Ready for production VITS training. 🚀
+>>>>>>> a56400a6f5848fffc4db19532ab293a8917eb305
