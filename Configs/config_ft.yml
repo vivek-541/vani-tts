@@ -3,7 +3,7 @@ save_freq: 5
 log_interval: 5
 device: "cuda"
 epochs: 50
-batch_size: 2
+batch_size: 16
 max_len: 120
 pretrained_model: "Models/LibriTTS/epochs_2nd_00020.pth"
 second_stage_load_pretrained: true
