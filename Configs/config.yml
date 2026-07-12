@@ -26,9 +26,10 @@ data_params:
 preprocess_params:
   sr: 24000
   spect_params:
-    n_fft: 2048
-    win_length: 1200
-    hop_length: 300
+    n_fft: 1024
+    win_length: 1024
+    hop_length: 256
+    segment_size: 8192
 
 model_params:
   multispeaker: false
